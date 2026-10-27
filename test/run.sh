@@ -93,62 +93,32 @@ a=$(cat SPEC.md); m apply "ALTER R3 | Title: Export data" >/dev/null; diff <(ech
 out=$(m done R99); has "done missing" "$out" "no such id"
 out=$(m done O1); has "done non-R" "$out" "not an active requirement"
 out=$(m done R1); has "done removed" "$out" "not an active requirement"
-printf 'S1: R3\nS2: R5\n' > .mkit/plan.md
-has slice1 "$(m status)" "next slice: R3"
-b=$(m brief); has slice_brief "$b" "R3"; hasnt slice_brief2 "$b" "R5"
+b=$(m brief); has brief_all "$b" "R3"; has brief_all2 "$b" "R5"
 out=$(m done R3); has done_ok "$out" "applied 1 op(s)"
 has built "$(m show R3)" "Built:"; has idx_done "$(m show)" "R3 [P1 done]"
 has changelog_done "$(cat SPEC.md)" "DONE R3"
-has status_done "$(m status)" "R3 [P1] done"; has slice2 "$(m status)" "next slice: R5"
-b=$(m brief); has slice2_brief "$b" "R5"; hasnt slice2_brief2 "$b" "Export data"
+has status_done "$(m status)" "R3 [P1] done"
+b=$(m brief); has brief_skips_done "$b" "R5"; hasnt brief_skips_done2 "$b" "Export data"
 b=$(m brief R3); has explicit_ids "$b" "Export data"
-m done R5 >/dev/null; has all_built "$(m status)" "all slices built"
-rm .mkit/plan.md; hasnt noplan_skips_done "$(m brief)" "**R"
+m done R5 >/dev/null
+# requirements added or changed after the build are not silently "met"
+m apply "ADD R | Late addition | Acceptance: it exists" >/dev/null
+has state_todo "$(m state R6)" "R6 todo"
+m apply "ALTER R3 | Title: Export data" >/dev/null; has title_keeps_built "$(m status)" "R3 [P1] done"
+m apply "ALTER R3 | Acceptance+: handles empty data" >/dev/null
+has reopened "$(m status)" "R3 [P1] reopened"; hasnt reopened_not_done "$(m show R3)" "Built:"
+has reopened_stamp "$(m show R3)" "Reopened:"; has reopen_log "$(cat SPEC.md)" "REOPEN R3"
+has reopen_brief "$(m brief)" "R3"
+m done R3 R6 >/dev/null; hasnt rebuilt "$(m status)" "reopened"
+hasnt all_built_brief "$(m brief)" "**R"
 
-# run: multi-step orchestration
-cd "$T" && mkdir runp && cd runp && m init r >/dev/null
-m apply "ADD R | Part one | Priority: P0 | Acceptance: a works" "ADD R | Part two | Priority: P0 | Acceptance: b works" \
-  "ADD O | Billing | Why: later" >/dev/null
-has "run none" "$(m run next)" "no active run"
-m run new "Two phase" >/dev/null
-has "run second refused" "$(m run new again)" "already active"
-has "add needs Do" "$(m run add action "| Merge")" "needs 'Do"
-has "add needs Check" "$(m run add wait "| Migrated")" "needs 'Check"
-has "build needs R" "$(m run add build "| stuff")" "requirement ids"
-m run add spec "| Spec ready" >/dev/null 2>&1
-m run add build "| R1" >/dev/null
-m run add action "| Merge | Do: touch merged" >/dev/null
-m run add wait "| Migrated | Check: test -f migrated" >/dev/null
-m run add build "| R2" >/dev/null
-out=$(m run next); rc=$?; has planning "$out" "PLANNING"
-m run approve >/dev/null
-has approved "$(m run show)" "Approved: yes"
-out=$(m run next); has step1 "$out" "STEP 1 spec"
-has done_order "$(m run done 2)" "step 1 is next"
-m run done 1 >/dev/null
-out=$(m run next); has step2 "$out" "STEP 2 build: R1"
-has done_unbuilt "$(m run done 2)" "R1 not built"
-m done R1 >/dev/null; m run done 2 >/dev/null
-out=$(m run next); has step3 "$out" "Do: touch merged"; m run done 3 >/dev/null
-"$MKIT" run next >/dev/null 2>&1; rc=$?; eq wait_rc "$rc" 3
-has waiting "$(m run next)" "WAIT 4"
-has done_wait_refused "$(m run done 4)" "wait not satisfied"
-touch migrated
-has resume "$(m run next)" "STEP 5 build: R2"
-# guard: removing R2 and opening a Q blocks the build step
-m apply "ADD Q | Which region?" >/dev/null
-has blocked_q "$(m run next)" "unanswered question"
-m apply "ANSWER Q1 | eu" >/dev/null
-m apply "MOVE R2 O | Why: cut" >/dev/null
-has blocked_moved "$(m run next)" "not an active requirement"
-m apply "MOVE O2 R" >/dev/null   # restores as R3
-# pause records a Q and holds until answered
-out=$(m run pause "Should part two include billing?"); has pause "$out" "paused on Q2"
-out=$(m run next); has paused_next "$out" "PAUSED: Q2"
-has pause_q "$(m show Q2)" "billing"
-m apply "ANSWER Q2 | no" >/dev/null
-has resumed_paused "$(m run next)" "BLOCKED"
-echo "$(m run show)" | grep -q "Status: running" && ok || bad "status running after answer"
+# state: the seam for builders
+has state_built "$(m state R3)" "R3 built"; has state_removed "$(m state R1)" "R1 removed"
+has state_missing "$(m state R99)" "R99 missing"; has state_other "$(m state O1)" "O1 ok"
+q=$(m apply "ADD Q | Open one?" | sed -n "s/^added //p"); has state_q "$(m state $q)" "$q open"
+has state_all "$(m state)" "R3 built"; hasnt state_all_skips_removed "$(m state)" "R1"
+out=$(m apply "ADD R | Another | Acceptance: x"); has apply_added "$out" "added R"
+m apply "LOG | something happened" >/dev/null; has log_op "$(cat SPEC.md)" "something happened"
 
 # outside a project
 cd "$T" && mkdir empty && cd empty

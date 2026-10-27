@@ -1,0 +1,7 @@
+{
+  "name": "mbuild",
+  "version": "0.1.0",
+  "description": "Build from an mkit spec: slice requirements, build one slice per fresh session, verify every acceptance bullet, review against the spec, and run multi-step changes. Needs the mkit plugin.",
+  "author": { "name": "Michael Wayman" },
+  "keywords": ["build", "requirements", "spec", "review"]
+}

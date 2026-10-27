@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+"""mbuild: slices and multi-step runs on top of mkit. Zero model tokens.
+
+Reads the spec only through the mkit CLI (check, state, brief, done, add, apply); never touches SPEC.md.
+
+  mbuild plan [show|next|unsliced]   slices in .mbuild/plan.md, one per line: `S1: R1 R2`
+                                     next = R ids of the first slice with unbuilt Rs
+                                     unsliced = unbuilt Rs in no slice (added after the plan)
+  mbuild status                      `mkit status` plus next slice and unsliced Rs
+  mbuild run new|add|show|next|done|check|pause|approve
+                                     multi-step run in .mbuild/run.md
+
+Run steps: mbuild run add <spec|build|action|wait|triage> | text | Do: cmd | Check: cmd
+  build text lists R ids; action needs Do:; wait needs Check: (exit 0 = satisfied).
+  run next exits 0 STEP/DONE, 3 WAIT, 4 PAUSED, 5 PLANNING (needs approve), 6 BLOCKED.
+Override the mkit binary with $MKIT.
+"""
+import os
+import re
+import subprocess
+import sys
+
+
+class Err(Exception):
+    pass
+
+
+def find_root():
+    d = os.getcwd()
+    while True:
+        if os.path.exists(os.path.join(d, "SPEC.md")) or os.path.isdir(os.path.join(d, ".mkit")):
+            return d
+        p = os.path.dirname(d)
+        if p == d:
+            raise Err("no SPEC.md found; run `mkit init` (mbuild needs the mkit plugin)")
+        d = p
+
+
+def paths(root):
+    m = os.path.join(root, ".mbuild")
+    return {"dir": m, "plan": os.path.join(m, "plan.md"), "run": os.path.join(m, "run.md")}
+
+
+def read(p, default=""):
+    try:
+        with open(p) as f:
+            return f.read()
+    except IOError:
+        return default
+
+
+def write(p, text):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, p)
+
+
+# ---------------------------------------------------------------- mkit seam
+def mkit(root, *args):
+    exe = os.environ.get("MKIT") or "mkit"
+    try:
+        r = subprocess.run([exe] + list(args), cwd=root, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, universal_newlines=True)
+    except OSError:
+        raise Err("mkit not found on PATH (install the mkit plugin, or set $MKIT)")
+    return r.returncode, r.stdout.strip()
+
+
+def states(root, *ids):
+    rc, out = mkit(root, "state", *ids)
+    if rc != 0:
+        raise Err(out)
+    return dict(l.split(None, 1) for l in out.split("\n") if l.strip())
+
+
+def spec_problems(root):
+    rc, out = mkit(root, "check")
+    return [] if rc == 0 else [l for l in out.split("\n") if l.strip()]
+
+
+# ---------------------------------------------------------------- plan
+PLAN_RE = re.compile(r"^S(\d+):\s*(.*)$")
+
+
+def plan_parse(text):
+    out = []
+    for l in text.split("\n"):
+        m = PLAN_RE.match(l.strip())
+        if m:
+            out.append((int(m.group(1)), re.findall(r"R\d+", m.group(2))))
+    return out
+
+
+def next_slice(root, plan):
+    """R ids of the first slice that still has unbuilt, active Rs."""
+    st = states(root)
+    for _, rs in plan:
+        todo = [x for x in rs if st.get(x) in ("todo", "reopened")]
+        if todo:
+            return todo
+    return []
+
+
+def unsliced(root, plan):
+    planned = {x for _, rs in plan for x in rs}
+    return [k for k, v in states(root).items() if v in ("todo", "reopened") and k not in planned]
+
+
+def cmd_plan(args):
+    root = find_root()
+    p = paths(root)
+    plan = plan_parse(read(p["plan"]))
+    what = args[0] if args else "show"
+    if what == "show":
+        sys.stdout.write(read(p["plan"]) or "(no .mbuild/plan.md)\n")
+    elif what == "next":
+        print(" ".join(next_slice(root, plan)))
+    elif what == "unsliced":
+        print(" ".join(unsliced(root, plan)))
+    else:
+        raise Err("usage: mbuild plan [show|next|unsliced]")
+    return 0
+
+
+def cmd_status(args):
+    root = find_root()
+    p = paths(root)
+    rc, out = mkit(root, "status")
+    print(out)
+    plan = plan_parse(read(p["plan"]))
+    if not plan:
+        print("next slice: (no .mbuild/plan.md)")
+        return 0
+    nxt = next_slice(root, plan)
+    print("next slice: " + (" ".join(nxt) if nxt else "(all slices built)"))
+    loose = unsliced(root, plan)
+    if loose:
+        print("unsliced: " + " ".join(loose) + " (added after the plan; /mbuild:build slices them)")
+    return 0
+
+
+# ---------------------------------------------------------------- run
+RUN_KINDS = ("spec", "build", "action", "wait", "triage")
+STEP_RE = re.compile(r"^(\d+)\. \[( |x)\] (\w+) \| (.*)$")
+CHECK_TIMEOUT = 120
+
+
+def run_parse(text):
+    run = {"title": "", "status": "", "paused": "", "steps": []}
+    for l in text.split("\n"):
+        if l.startswith("# Run: "):
+            run["title"] = l[7:].strip()
+        elif l.startswith("Status: "):
+            run["status"] = l[8:].strip()
+        elif l.startswith("Paused: "):
+            run["paused"] = l[8:].strip()
+        else:
+            m = STEP_RE.match(l)
+            if m:
+                parts = re.split(r"\s+\|\s+", m.group(4).strip())
+                fields = {}
+                for x in parts[1:]:
+                    fm = re.match(r"^([A-Za-z]+):\s*(.*)$", x)
+                    if fm:
+                        fields[fm.group(1)] = fm.group(2)
+                run["steps"].append({"n": int(m.group(1)), "done": m.group(2) == "x",
+                                     "kind": m.group(3), "text": parts[0], "f": fields})
+    return run
+
+
+def run_render(run):
+    out = ["# Run: " + run["title"], "Status: " + run["status"]]
+    if run["paused"]:
+        out.append("Paused: " + run["paused"])
+    out.append("")
+    for st in run["steps"]:
+        extra = "".join(" | %s: %s" % kv for kv in st["f"].items())
+        out.append("%d. [%s] %s | %s%s" % (st["n"], "x" if st["done"] else " ", st["kind"], st["text"], extra))
+    return "\n".join(out) + "\n"
+
+
+def run_load(root):
+    text = read(paths(root)["run"])
+    if not text:
+        raise Err("no active run; start one with `mbuild run new \"<title>\"`")
+    return run_parse(text)
+
+
+def run_save(root, run):
+    write(paths(root)["run"], run_render(run))
+
+
+def run_check_cmd(root, cmd):
+    try:
+        res = subprocess.run(cmd, shell=True, cwd=root, timeout=CHECK_TIMEOUT,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    except subprocess.TimeoutExpired:
+        return False, "timed out after %ds" % CHECK_TIMEOUT
+    return res.returncode == 0, res.stdout.strip()[-200:]
+
+
+def build_blocks(root, step):
+    errs = spec_problems(root)
+    ids = re.findall(r"\bR\d+\b", step["text"])
+    st = states(root, *ids)
+    for id_ in ids:
+        if st.get(id_) in ("removed", "missing"):
+            errs.append("%s is not an active requirement (removed, missing, or moved out of scope)" % id_)
+    return errs
+
+
+def run_finish(root, run):
+    mkit(root, "apply", "LOG | RUN done: %s" % run["title"])
+    run["status"] = "done"
+    run_save(root, run)
+
+
+def run_step_line(st):
+    out = "STEP %d %s: %s" % (st["n"], st["kind"], st["text"])
+    for k in ("Do", "Check"):
+        if k in st["f"]:
+            out += "\n%s: %s" % (k, st["f"][k])
+    return out
+
+
+def cmd_run(args):
+    if not args:
+        raise Err("usage: mbuild run new|add|show|next|done|check|pause|approve")
+    verb, rest = args[0], args[1:]
+    root = find_root()
+    p = paths(root)
+    if verb == "new":
+        title = " ".join(rest).strip()
+        if not title:
+            raise Err('usage: mbuild run new "<title>"')
+        old = read(p["run"])
+        if old and run_parse(old)["status"] != "done":
+            raise Err("a run is already active (%s); finish it or `mbuild run show`" % run_parse(old)["title"])
+        run_save(root, {"title": title, "status": "planning", "paused": "", "steps": []})
+        print("run started (planning); add steps with `mbuild run add`")
+        return 0
+    run = run_load(root)
+    if verb == "show":
+        sys.stdout.write(run_render(run))
+        return 0
+    if verb == "add":
+        if run["status"] != "planning":
+            raise Err("run is %s; steps can only be added while planning" % run["status"])
+        segs = [x.strip() for x in re.split(r"\s+\|\s+", " ".join(rest))]
+        if len(segs) < 2 or segs[0] not in RUN_KINDS:
+            raise Err("usage: mbuild run add <%s> | text [| Do: cmd] [| Check: cmd]" % "|".join(RUN_KINDS))
+        f = {}
+        for x in segs[2:]:
+            fm = re.match(r"^(Do|Check):\s*(.+)$", x)
+            if not fm:
+                raise Err("expected 'Do: cmd' or 'Check: cmd', got '%s'" % x)
+            f[fm.group(1)] = fm.group(2)
+        if segs[0] == "action" and "Do" not in f:
+            raise Err("action needs 'Do: <command>'")
+        if segs[0] == "wait" and "Check" not in f:
+            raise Err("wait needs 'Check: <command>' (exit 0 = satisfied)")
+        if segs[0] == "build" and not re.search(r"\bR\d+\b", segs[1]):
+            raise Err("build needs requirement ids, e.g. 'R7 R8'")
+        run["steps"].append({"n": len(run["steps"]) + 1, "done": False, "kind": segs[0],
+                             "text": segs[1], "f": f})
+        run_save(root, run)
+        print("step %d" % len(run["steps"]))
+        return 0
+    if verb == "approve":
+        if run["status"] != "planning" or not run["steps"]:
+            raise Err("nothing to approve (status %s, %d steps)" % (run["status"], len(run["steps"])))
+        for st in run["steps"]:
+            if st["kind"] == "action":
+                st["f"]["Approved"] = "yes"
+        run["status"] = "running"
+        run_save(root, run)
+        print("approved; %d steps" % len(run["steps"]))
+        return 0
+    if verb == "pause":
+        q = " ".join(rest).strip()
+        if not q:
+            raise Err('usage: mbuild run pause "<question>"')
+        rc, out = mkit(root, "apply", "ADD Q | " + q)
+        m = re.search(r"added (Q\d+)", out)
+        if rc != 0 or not m:
+            raise Err("could not record the question: " + out)
+        qid = m.group(1)
+        run["status"], run["paused"] = "paused", "%s %s" % (qid, q)
+        run_save(root, run)
+        print("paused on %s; answer it, then `mbuild run next`" % qid)
+        return 0
+    if verb in ("next", "check", "done"):
+        return run_advance(root, run, verb, rest)
+    raise Err("unknown run verb: %s" % verb)
+
+
+def run_advance(root, run, verb, rest):
+    if run["status"] == "done":
+        print("DONE")
+        return 0
+    if run["status"] == "planning":
+        print("PLANNING: show `mbuild run show`, get the user's approval, then `mbuild run approve`")
+        return 5
+    if run["status"] == "paused":
+        qid = run["paused"].split()[0]
+        if states(root, qid).get(qid) not in ("answered", "removed"):
+            print("PAUSED: " + run["paused"])
+            return 4
+        run["status"], run["paused"] = "running", ""
+        run_save(root, run)
+    while True:
+        todo = [st for st in run["steps"] if not st["done"]]
+        if not todo:
+            if spec_problems(root):
+                print("BLOCKED: all steps done but `mkit check` fails")
+                run_save(root, run)
+                return 6
+            run_finish(root, run)
+            print("DONE")
+            return 0
+        st = todo[0]
+        if verb == "done":
+            if st["kind"] == "build":
+                ids = re.findall(r"\bR\d+\b", st["text"])
+                undone = [i for i, v in states(root, *ids).items() if v != "built"]
+                if undone:
+                    print("BLOCKED: %s not built and verified; run `mkit done`" % " ".join(undone))
+                    return 6
+            elif st["kind"] == "wait":
+                ok, out = run_check_cmd(root, st["f"]["Check"])
+                if not ok:
+                    print("BLOCKED: wait not satisfied: %s" % out)
+                    return 6
+            want = int(rest[0]) if rest and rest[0].isdigit() else st["n"]
+            if want != st["n"]:
+                print("BLOCKED: step %d is next, not %d" % (st["n"], want))
+                return 6
+            st["done"] = True
+            run_save(root, run)
+            print("step %d done" % st["n"])
+            return 0
+        if st["kind"] == "wait":
+            ok, out = run_check_cmd(root, st["f"]["Check"])
+            if ok:
+                st["done"] = True
+                run["status"] = "running"
+                run_save(root, run)
+                continue
+            run["status"] = "waiting"
+            run_save(root, run)
+            print("WAIT %d: %s (check failed: %s)" % (st["n"], st["text"], out or "no output"))
+            return 3
+        if st["kind"] == "build":
+            errs = build_blocks(root, st)
+            if errs:
+                print("BLOCKED %d: spec would break:\n%s" % (st["n"], "\n".join(errs)))
+                return 6
+        if st["kind"] == "action" and st["f"].get("Approved") != "yes":
+            print("BLOCKED %d: action not approved" % st["n"])
+            return 6
+        if verb == "check":
+            print("STEP %d is not a wait" % st["n"])
+            return 0
+        run["status"] = "running"
+        run_save(root, run)
+        print(run_step_line(st))
+        return 0
+
+COMMANDS = {"plan": cmd_plan, "status": cmd_status, "run": cmd_run}
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help") or argv[1] not in COMMANDS:
+        sys.stdout.write(__doc__)
+        return 0 if len(argv) < 2 or argv[1] in ("-h", "--help") else 2
+    try:
+        return COMMANDS[argv[1]](argv[2:])
+    except Err as e:
+        sys.stderr.write("mbuild: %s\n" % e)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

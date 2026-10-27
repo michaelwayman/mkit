@@ -1,8 +1,9 @@
 {
   "name": "mkit",
-  "description": "Local marketplace for the mkit plugin",
+  "description": "Local marketplace for mkit (spec) and mbuild (build from the spec)",
   "owner": { "name": "Michael Wayman" },
   "plugins": [
-    { "name": "mkit", "source": "./", "description": "Requirements-first spec kit: frame, challenge, change, triage, handoff." }
+    { "name": "mkit", "source": "./", "description": "Requirements-first spec kit: frame, challenge, change, triage, handoff." },
+    { "name": "mbuild", "source": "./mbuild", "description": "Builds from an mkit spec: slices, verified builds, review, multi-step runs. Needs mkit." }
   ]
 }

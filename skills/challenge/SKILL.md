@@ -22,4 +22,4 @@ Findings only, as a table: # · Finding · Hits (IDs) · Proposed op · Cost to 
 
 Then AskUserQuestion (multiSelect) over the findings: which to accept. Apply accepted ones as ops in a single `mkit apply` (new A, C, Q, O; ALTER; REMOVE; MOVE). Rejected findings that rest on an assumption become an A with a Test, so the doubt is not lost.
 
-Finish with `mkit check`. If answers are still open, say which Q they are.
+Finish with `mkit check`. If answers are still open, say which Q they are. Otherwise: "Next: `/mbuild:build` for a whole project, or `/mkit:handoff` for one piece."

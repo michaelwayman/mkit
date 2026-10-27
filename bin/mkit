@@ -7,11 +7,11 @@
   mkit apply [op ...]            ops as args, or one per line on stdin
   mkit check [--draft]           full gate by default; --draft = structure only
   mkit brief [ID...]             builder handoff, written to .mkit/brief.md
-                                 (no IDs: the next slice in .mkit/plan.md, else every R not done)
+                                 (no IDs: every R not done)
   mkit done ID...                mark Rs built and verified (same as the DONE op)
-  mkit status                    progress: Rs done/todo, open Q, open inbox, next slice
-  mkit run new|add|show|next|done|check|pause|approve
-                                 multi-step run in .mkit/run.md (see below)
+  mkit status                    progress: Rs done/todo/reopened, open Q, open inbox
+  mkit state [ID...]             one line per ID, for tools: R todo|reopened|built|removed,
+                                 Q open|answered, other ok, unknown missing (no IDs: every R)
 
 Op grammar: VERB ARGS | Title-or-text | Key: value | Key+: more
   ADD R | Title | Priority: P0 | Acceptance: one; two
@@ -22,17 +22,13 @@ Op grammar: VERB ARGS | Title-or-text | Key: value | Key+: more
   TRACE | brief bullet | R1
   RESOLVE I3 | R4
   DONE R1 R2                     (R built and verified; sets Built: <date>)
+  LOG | text                     (changelog line only)
 
-Run steps: mkit run add <spec|build|action|wait|triage> | text | Do: cmd | Check: cmd
-  build text lists R ids; action needs Do:; wait needs Check: (exit 0 = satisfied).
-  run next exits 0 STEP/DONE, 3 WAIT, 4 PAUSED, 5 PLANNING (needs approve), 6 BLOCKED.
-
-Slices live in .mkit/plan.md, one per line: `S1: R1 R2`.
+Builders (the mbuild plugin, or any tool) cross this seam: brief, state, check, done, add.
 """
 import datetime
 import os
 import re
-import subprocess
 import sys
 
 KINDS = [("C", "Constraints"), ("A", "Assumptions"), ("R", "Requirements"),
@@ -214,8 +210,7 @@ def find_root(create=False):
 def paths(root):
     m = os.path.join(root, ".mkit")
     return {"spec": os.path.join(root, "SPEC.md"), "dir": m, "inbox": os.path.join(m, "inbox.md"),
-            "index": os.path.join(m, "index.md"), "brief": os.path.join(m, "brief.md"),
-            "plan": os.path.join(m, "plan.md"), "run": os.path.join(m, "run.md")}
+            "index": os.path.join(m, "index.md"), "brief": os.path.join(m, "brief.md")}
 
 
 def read(p, default=""):
@@ -423,8 +418,14 @@ def apply_op(doc, rows, op):
         log(doc, "ADD %s: %s" % (it.id, it.title))
     elif verb == "ALTER":
         it = doc.find(rest[0])
-        for k, plus, v in split_fields(segs[1:]):
+        fields = split_fields(segs[1:])
+        for k, plus, v in fields:
             set_field(it, k, plus, v)
+        if it.prefix == "R" and it.get("Built") and any(k.lower() == "acceptance" for k, _, _ in fields):
+            # new or changed acceptance means the old verification no longer covers it
+            it.fields = [f for f in it.fields if f[0].lower() != "built"]
+            it.set("Reopened", today())
+            log(doc, "REOPEN %s (acceptance changed)" % it.id)
         log(doc, "ALTER %s" % it.id)
     elif verb == "REMOVE":
         it = doc.find(rest[0])
@@ -481,6 +482,10 @@ def apply_op(doc, rows, op):
                 raise Err("%s is not an active requirement" % id_)
             it.set("Built", today())
         log(doc, "DONE %s" % " ".join(ids))
+    elif verb == "LOG":
+        if len(segs) < 2:
+            raise Err("LOG | text")
+        log(doc, segs[1])
     elif verb == "RESOLVE":
         m = re.match(r"^I(\d+)$", rest[0] if rest else "")
         row = next((r for r in rows if m and r["n"] == int(m.group(1))), None)
@@ -500,6 +505,7 @@ def cmd_apply(args):
     p = paths(root)
     doc = load(root)
     rows = inbox_parse(read(p["inbox"]))
+    before = {i.id for i in doc.items()}
     for n, op in enumerate(ops, 1):
         try:
             apply_op(doc, rows, op)
@@ -515,36 +521,37 @@ def cmd_apply(args):
     if os.path.exists(p["inbox"]) or rows:
         write(p["inbox"], inbox_render(rows))
     print("applied %d op(s); %s" % (len(ops), counts(doc)))
+    new = [i.id for i in doc.items() if i.id not in before]
+    if new:
+        print("added " + " ".join(new))
     return 0
-
-
-# ---------------------------------------------------------------- plan
-PLAN_RE = re.compile(r"^S(\d+):\s*(.*)$")
-
-
-def plan_parse(text):
-    out = []
-    for l in text.split("\n"):
-        m = PLAN_RE.match(l.strip())
-        if m:
-            out.append((int(m.group(1)), re.findall(r"R\d+", m.group(2))))
-    return out
-
-
-def next_slice(doc, plan):
-    """R ids of the first slice that still has unbuilt, active Rs."""
-    ids = {i.id: i for i in doc.items()}
-    for _, rs in plan:
-        todo = [x for x in rs if x in ids and not ids[x].removed and not ids[x].get("Built")]
-        if todo:
-            return todo
-    return []
 
 
 def cmd_done(args):
     if not args:
         raise Err("usage: mkit done R<n> [R<n> ...]")
     return cmd_apply(["DONE " + " ".join(args)])
+
+
+def cmd_state(args):
+    doc = load(find_root())
+    items = {i.id: i for i in doc.items()}
+    ids = args or sorted((i.id for i in items.values() if i.prefix == "R" and not i.removed),
+                         key=lambda x: int(x[1:]))
+    for id_ in ids:
+        it = items.get(id_.upper())
+        if not it:
+            st = "missing"
+        elif it.removed:
+            st = "removed"
+        elif it.prefix == "R":
+            st = "built" if it.get("Built") else ("reopened" if it.get("Reopened") else "todo")
+        elif it.prefix == "Q":
+            st = "answered" if it.get("Answer") else "open"
+        else:
+            st = "ok"
+        print("%s %s" % (id_.upper(), st))
+    return 0
 
 
 def cmd_status(args):
@@ -560,250 +567,10 @@ def cmd_status(args):
         len(done), len(rs), len([i for i in done if i.get("Priority") == "P0"]),
         len([i for i in rs if i.get("Priority") == "P0"])))
     for i in rs:
-        print("  %s [%s] %s %s" % (i.id, i.get("Priority"), "done" if i.get("Built") else "todo", i.title))
+        state = "done" if i.get("Built") else ("reopened" if i.get("Reopened") else "todo")
+        print("  %s [%s] %s %s" % (i.id, i.get("Priority"), state, i.title))
     print("open Q %d, inbox %d" % (len(openq), len(inbox)))
-    plan = plan_parse(read(p["plan"]))
-    if not plan:
-        print("next slice: (no .mkit/plan.md)")
-    else:
-        nxt = next_slice(doc, plan)
-        print("next slice: " + (" ".join(nxt) if nxt else "(all slices built)"))
     return 0
-
-
-# ---------------------------------------------------------------- run
-RUN_KINDS = ("spec", "build", "action", "wait", "triage")
-STEP_RE = re.compile(r"^(\d+)\. \[( |x)\] (\w+) \| (.*)$")
-CHECK_TIMEOUT = 120
-
-
-def run_parse(text):
-    run = {"title": "", "status": "", "paused": "", "steps": []}
-    for l in text.split("\n"):
-        if l.startswith("# Run: "):
-            run["title"] = l[7:].strip()
-        elif l.startswith("Status: "):
-            run["status"] = l[8:].strip()
-        elif l.startswith("Paused: "):
-            run["paused"] = l[8:].strip()
-        else:
-            m = STEP_RE.match(l)
-            if m:
-                parts = re.split(r"\s+\|\s+", m.group(4).strip())
-                fields = {}
-                for x in parts[1:]:
-                    fm = re.match(r"^([A-Za-z]+):\s*(.*)$", x)
-                    if fm:
-                        fields[fm.group(1)] = fm.group(2)
-                run["steps"].append({"n": int(m.group(1)), "done": m.group(2) == "x",
-                                     "kind": m.group(3), "text": parts[0], "f": fields})
-    return run
-
-
-def run_render(run):
-    out = ["# Run: " + run["title"], "Status: " + run["status"]]
-    if run["paused"]:
-        out.append("Paused: " + run["paused"])
-    out.append("")
-    for st in run["steps"]:
-        extra = "".join(" | %s: %s" % kv for kv in st["f"].items())
-        out.append("%d. [%s] %s | %s%s" % (st["n"], "x" if st["done"] else " ", st["kind"], st["text"], extra))
-    return "\n".join(out) + "\n"
-
-
-def run_load(root):
-    text = read(paths(root)["run"])
-    if not text:
-        raise Err("no active run; start one with `mkit run new \"<title>\"`")
-    return run_parse(text)
-
-
-def run_save(root, run):
-    write(paths(root)["run"], run_render(run))
-
-
-def run_check_cmd(root, cmd):
-    try:
-        res = subprocess.run(cmd, shell=True, cwd=root, timeout=CHECK_TIMEOUT,
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    except subprocess.TimeoutExpired:
-        return False, "timed out after %ds" % CHECK_TIMEOUT
-    return res.returncode == 0, res.stdout.strip()[-200:]
-
-
-def build_blocks(doc, step):
-    errs = problems(doc, ready=True)
-    for id_ in re.findall(r"\bR\d+\b", step["text"]):
-        try:
-            it = doc.find(id_)
-        except Err:
-            errs.append("%s does not exist" % id_)
-            continue
-        if it.prefix != "R" or it.removed:
-            errs.append("%s is not an active requirement (removed, or moved out of scope)" % id_)
-    return errs
-
-
-def run_finish(root, run):
-    doc = load(root)
-    log(doc, "RUN done: %s" % run["title"])
-    write(paths(root)["spec"], render(doc))
-    run["status"] = "done"
-    run_save(root, run)
-
-
-def run_step_line(st):
-    out = "STEP %d %s: %s" % (st["n"], st["kind"], st["text"])
-    for k in ("Do", "Check"):
-        if k in st["f"]:
-            out += "\n%s: %s" % (k, st["f"][k])
-    return out
-
-
-def cmd_run(args):
-    if not args:
-        raise Err("usage: mkit run new|add|show|next|done|check|pause|approve")
-    verb, rest = args[0], args[1:]
-    root = find_root()
-    p = paths(root)
-    if verb == "new":
-        title = " ".join(rest).strip()
-        if not title:
-            raise Err('usage: mkit run new "<title>"')
-        old = read(p["run"])
-        if old and run_parse(old)["status"] != "done":
-            raise Err("a run is already active (%s); finish it or `mkit run show`" % run_parse(old)["title"])
-        run_save(root, {"title": title, "status": "planning", "paused": "", "steps": []})
-        print("run started (planning); add steps with `mkit run add`")
-        return 0
-    run = run_load(root)
-    if verb == "show":
-        sys.stdout.write(run_render(run))
-        return 0
-    if verb == "add":
-        if run["status"] != "planning":
-            raise Err("run is %s; steps can only be added while planning" % run["status"])
-        segs = [x.strip() for x in re.split(r"\s+\|\s+", " ".join(rest))]
-        if len(segs) < 2 or segs[0] not in RUN_KINDS:
-            raise Err("usage: mkit run add <%s> | text [| Do: cmd] [| Check: cmd]" % "|".join(RUN_KINDS))
-        f = {}
-        for x in segs[2:]:
-            fm = re.match(r"^(Do|Check):\s*(.+)$", x)
-            if not fm:
-                raise Err("expected 'Do: cmd' or 'Check: cmd', got '%s'" % x)
-            f[fm.group(1)] = fm.group(2)
-        if segs[0] == "action" and "Do" not in f:
-            raise Err("action needs 'Do: <command>'")
-        if segs[0] == "wait" and "Check" not in f:
-            raise Err("wait needs 'Check: <command>' (exit 0 = satisfied)")
-        if segs[0] == "build" and not re.search(r"\bR\d+\b", segs[1]):
-            raise Err("build needs requirement ids, e.g. 'R7 R8'")
-        run["steps"].append({"n": len(run["steps"]) + 1, "done": False, "kind": segs[0],
-                             "text": segs[1], "f": f})
-        run_save(root, run)
-        print("step %d" % len(run["steps"]))
-        return 0
-    if verb == "approve":
-        if run["status"] != "planning" or not run["steps"]:
-            raise Err("nothing to approve (status %s, %d steps)" % (run["status"], len(run["steps"])))
-        for st in run["steps"]:
-            if st["kind"] == "action":
-                st["f"]["Approved"] = "yes"
-        run["status"] = "running"
-        run_save(root, run)
-        print("approved; %d steps" % len(run["steps"]))
-        return 0
-    if verb == "pause":
-        q = " ".join(rest).strip()
-        if not q:
-            raise Err('usage: mkit run pause "<question>"')
-        doc = load(root)
-        qid = "Q%d" % doc.next_num("Q")
-        cmd_apply(["ADD Q | " + q])
-        run["status"], run["paused"] = "paused", "%s %s" % (qid, q)
-        run_save(root, run)
-        print("paused on %s; answer it, then `mkit run next`" % qid)
-        return 0
-    if verb in ("next", "check", "done"):
-        return run_advance(root, run, verb, rest)
-    raise Err("unknown run verb: %s" % verb)
-
-
-def run_advance(root, run, verb, rest):
-    doc = load(root)
-    if run["status"] == "done":
-        print("DONE")
-        return 0
-    if run["status"] == "planning":
-        print("PLANNING: show `mkit run show`, get the user's approval, then `mkit run approve`")
-        return 5
-    if run["status"] == "paused":
-        qid = run["paused"].split()[0]
-        try:
-            answered = bool(doc.find(qid).get("Answer"))
-        except Err:
-            answered = False
-        if not answered:
-            print("PAUSED: " + run["paused"])
-            return 4
-        run["status"], run["paused"] = "running", ""
-        run_save(root, run)
-    while True:
-        todo = [st for st in run["steps"] if not st["done"]]
-        if not todo:
-            if problems(doc, ready=True):
-                print("BLOCKED: all steps done but `mkit check` fails")
-                run_save(root, run)
-                return 6
-            run_finish(root, run)
-            print("DONE")
-            return 0
-        st = todo[0]
-        if verb == "done":
-            if st["kind"] == "build":
-                undone = [i for i in re.findall(r"\bR\d+\b", st["text"]) if not doc.find(i).get("Built")]
-                if undone:
-                    print("BLOCKED: %s not built and verified; run `mkit done`" % " ".join(undone))
-                    return 6
-            elif st["kind"] == "wait":
-                ok, out = run_check_cmd(root, st["f"]["Check"])
-                if not ok:
-                    print("BLOCKED: wait not satisfied: %s" % out)
-                    return 6
-            want = int(rest[0]) if rest and rest[0].isdigit() else st["n"]
-            if want != st["n"]:
-                print("BLOCKED: step %d is next, not %d" % (st["n"], want))
-                return 6
-            st["done"] = True
-            run_save(root, run)
-            print("step %d done" % st["n"])
-            return 0
-        if st["kind"] == "wait":
-            ok, out = run_check_cmd(root, st["f"]["Check"])
-            if ok:
-                st["done"] = True
-                run["status"] = "running"
-                run_save(root, run)
-                continue
-            run["status"] = "waiting"
-            run_save(root, run)
-            print("WAIT %d: %s (check failed: %s)" % (st["n"], st["text"], out or "no output"))
-            return 3
-        if st["kind"] == "build":
-            errs = build_blocks(doc, st)
-            if errs:
-                print("BLOCKED %d: spec would break:\n%s" % (st["n"], "\n".join(errs)))
-                return 6
-        if st["kind"] == "action" and st["f"].get("Approved") != "yes":
-            print("BLOCKED %d: action not approved" % st["n"])
-            return 6
-        if verb == "check":
-            print("STEP %d is not a wait" % st["n"])
-            return 0
-        run["status"] = "running"
-        run_save(root, run)
-        print(run_step_line(st))
-        return 0
 
 
 # ---------------------------------------------------------------- brief
@@ -814,8 +581,7 @@ def cmd_brief(args):
     errs = problems(doc, ready=True)
     live = [i for i in doc.items() if not i.removed]
     if not args:
-        args = next_slice(doc, plan_parse(read(p["plan"]))) or [
-            i.id for i in live if i.prefix == "R" and not i.get("Built")]
+        args = [i.id for i in live if i.prefix == "R" and not i.get("Built")]
     pick = [i for i in live if i.prefix == "R" and i.id in args]
     pick.sort(key=lambda i: (i.get("Priority"), i.num))
     out = ["# Build brief", "",
@@ -861,8 +627,9 @@ When to use what:
 - A request touches an O item or goes beyond an R's acceptance: stop and ask; suggest `/mkit:change`. Do not build it.
 - Scope, a constraint or a tech choice is unclear: ask, or `/mkit:research`. Do not guess.
 - Design decisions (schema, API shape, service boundaries, libraries) are the user's: ask with a recommendation, then record it (`mkit apply "ANSWER Q<n> | text | Why: ..."`, By: delegated if they say "you decide").
-- A change with merges, migrations or waits between parts: `/mkit:run "<change>"`.
+- Building from the spec (slices, multi-step runs with merges, migrations or waits, review) is the mbuild plugin: `/mbuild:build`, `/mbuild:run`, `/mbuild:review`.
 - User corrects you: `/mkit:learn`. Said "triage": `/mkit:triage`. New project or big feature with no SPEC.md: suggest `/mkit:frame`.
+- A requirement's acceptance changed after it was built: `mkit status` shows it `reopened`.
 - You assumed something the spec doesn't cover: `mkit add "assumed X" --adjust`.
 
 Change SPEC.md only through `mkit apply` or `/mkit:change`, never by hand.
@@ -893,7 +660,7 @@ def cmd_init(args):
 
 
 COMMANDS = {"init": cmd_init, "show": cmd_show, "add": cmd_add, "apply": cmd_apply,
-            "check": cmd_check, "brief": cmd_brief, "done": cmd_done, "status": cmd_status, "run": cmd_run}
+            "check": cmd_check, "brief": cmd_brief, "done": cmd_done, "status": cmd_status, "state": cmd_state}
 
 
 def main(argv):

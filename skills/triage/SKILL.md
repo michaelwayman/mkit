@@ -23,4 +23,4 @@ Apply with one `mkit apply`, ending with `RESOLVE I<n> | <R or note>` per item. 
 
 Then list the open bugs and adjustments as the builder's to-do (IDs and one line each). Do not build.
 
-A batch that needs several ordered steps (merges, migrations, waits): `/mkit:run triage`.
+A batch that needs several ordered steps (merges, migrations, waits): `/mbuild:run triage`.

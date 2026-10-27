@@ -1,6 +1,13 @@
 # mkit
 
-Requirements first. A Claude Code plugin for working out what to build: scope, out of scope, constraints, assumptions, open questions. Then a tiny brief to build from. No GitHub, and built to spend few tokens.
+Requirements first. Two small Claude Code plugins in one repo, with a hard line between them:
+
+| Plugin | Owns | Commands |
+|---|---|---|
+| **mkit** | *What and why.* The spec: scope, out of scope, constraints, assumptions, open questions, a one-line backlog, a tiny builder brief, and the record of what is verified. | `/mkit:frame` `challenge` `change` `triage` `research` `handoff` `learn`, and the `mkit` CLI |
+| **mbuild** | *How and when.* Slicing, building slice by slice, review against the spec, multi-step runs. Needs mkit. | `/mbuild:build` `run` `review`, and the `mbuild` CLI |
+
+mbuild never edits SPEC.md. It crosses one seam: `mkit brief` (what to build), `mkit state` / `check` (is it safe), `mkit done` (it is verified), `mkit add` (the spec missed something). Any other builder can use the same five calls. No GitHub, and built to spend few tokens.
 
 Design and research: [docs/design.md](docs/design.md).
 
@@ -8,14 +15,23 @@ Design and research: [docs/design.md](docs/design.md).
 ```bash
 claude plugin marketplace add ~/Projects/mkit
 claude plugin install mkit@mkit
+claude plugin install mbuild@mkit      # optional: only if you want the build side
 ```
-Dev loop: `claude --plugin-dir ~/Projects/mkit`, then `/reload-plugins`. Needs `python3` (stdlib only). The plugin's `bin/` puts `mkit` on PATH inside Claude Code; to use it in a normal shell too: `ln -s ~/Projects/mkit/bin/mkit /usr/local/bin/mkit`.
+Dev loop: `claude --plugin-dir ~/Projects/mkit --plugin-dir ~/Projects/mkit/mbuild`, then `/reload-plugins`. Needs `python3` (stdlib only). Each plugin's `bin/` puts `mkit` / `mbuild` on PATH inside Claude Code; for a normal shell: `ln -s ~/Projects/mkit/bin/mkit /usr/local/bin/mkit` (same for `mbuild/bin/mbuild`).
 
 ## Flow
 1. `/mkit:frame [brief]`: interview, draft SPEC.md, `mkit check`, wait for `ready`.
 2. `/mkit:challenge [premortem|redteam|devil|first|drop]`: attack the spec; accepted findings become changes.
-3. `/mkit:handoff`: writes `.mkit/brief.md`; build from it in a fresh session.
-4. Whole project: `/mkit:build`, repeated. It slices the Rs once (`.mkit/plan.md`), then builds one slice per fresh session, verifies every acceptance bullet, and runs `mkit done`. `/mkit:triage` between slices; `mkit status` shows progress.
+3. Build, one of two ways:
+   - One piece, any builder: `/mkit:handoff` writes `.mkit/brief.md`; build from it in a fresh session.
+   - Whole project: `/mbuild:build`, repeated. It slices the Rs once (`.mbuild/plan.md`), builds one slice per fresh session, verifies every acceptance bullet, and runs `mkit done`. `/mkit:triage` between slices.
+4. `/mbuild:review`: check what was built against the spec (acceptance, constraints, scope drift). Findings go to the inbox; `/mbuild:build` fixes them.
+
+## Requirements stay checked
+A requirement is **met** when every acceptance bullet has been run and `mkit done` recorded it. The spec never claims more than that:
+- Add or change a requirement any time (`/mkit:change`, or `/mkit:triage` for the inbox). New Rs show as `todo` (and `unsliced` in `mbuild status`); `/mbuild:build` slices and builds them.
+- Add or change acceptance on a built R and it flips to `reopened`, so it is not "done" until verified again. Title and priority edits do not reopen it.
+- `mkit status` is the scoreboard (Rs done/todo/reopened, open Q, inbox). `/mbuild:review` is the independent check.
 
 Anytime:
 
@@ -24,37 +40,46 @@ Anytime:
 | File a bug, feature or tweak (0 tokens) | `mkit add "login 500s on empty email" --bug` (or `--feature`, `--adjust`) |
 | Process the inbox in one pass | `/mkit:triage` |
 | Add, drop, alter, move in or out of scope; answer a question | `/mkit:change "<change>"` |
-| Multi-step change with merges, migrations, waits (pauses to ask; resumable) | `/mkit:run "<change>"`, `/mkit:run` to resume, `/mkit:run triage` |
+| Multi-step change with merges, migrations, waits (pauses to ask; resumable) | `/mbuild:run "<change>"`, `/mbuild:run` to resume, `/mbuild:run triage` |
 | Get facts before a decision | `/mkit:research <topic>` / `ask "<question>"` |
+| Check built work against the spec | `/mbuild:review [R IDs]` |
 | Turn a correction into a rule | `/mkit:learn "<what went wrong>"` |
 
 ## The `mkit` command (no model, no tokens)
 | Command | Does |
 |---|---|
-| `mkit init [name]` | SPEC.md, `.mkit/`, a 10-line CLAUDE.md snippet |
+| `mkit init [name]` | SPEC.md, `.mkit/`, a short CLAUDE.md snippet |
 | `mkit show [IDs \| --index \| --inbox]` | the index, just those items, or the open inbox |
 | `mkit add "<text>" [--bug\|--feature\|--adjust]` | one line into `.mkit/inbox.md` |
 | `mkit apply [op ...]` | change SPEC.md by small ops; validated, atomic, stable IDs, changelog |
 | `mkit check [--draft]` | the ready gate: no open Q, acceptance on every R, trace covered |
-| `mkit brief [IDs]` | builder handoff (no IDs: next slice, else every R not done) |
+| `mkit brief [IDs]` | builder handoff (no IDs: every R not done) |
 | `mkit done IDs` | mark Rs built and verified |
-| `mkit run new\|add\|show\|next\|done\|check\|pause\|approve` | multi-step run state in `.mkit/run.md`; refuses a build step while the spec is broken, an action before approval, a step out of order |
-| `mkit status` | Rs done/todo, open Q, inbox, next slice |
+| `mkit state [IDs]` | one machine-readable line per ID (todo, reopened, built, removed, open, answered, missing) |
+| `mkit status` | Rs done/todo/reopened, open Q, inbox |
 
 `mkit --help` lists the op grammar.
 
+## The `mbuild` command (no model, no tokens)
+| Command | Does |
+|---|---|
+| `mbuild plan [show\|next\|unsliced]` | slices in `.mbuild/plan.md`; the next slice; Rs in no slice |
+| `mbuild status` | `mkit status` plus next slice and unsliced Rs |
+| `mbuild run new\|add\|show\|next\|done\|check\|pause\|approve` | multi-step run state in `.mbuild/run.md`; refuses a build step while the spec is broken, an action before approval, a step out of order |
+
 ## Why it is cheap
-- Skills and mkit do the mechanical work; the model emits 3-line ops, not file rewrites.
+- Skills and the CLIs do the mechanical work; the model emits 3-line ops, not file rewrites.
 - Skills read the index, then only the IDs they need. SPEC.md is never read whole.
-- No subagents by default; research is opt-in and capped. Triage runs on Haiku.
-- Plugin prompts are small (about 10 KB). `scripts/budget.sh` enforces a budget.
+- No subagents by default; `research` and `review` are opt-in, one capped agent each. Triage runs on Haiku.
+- Prompts are small (about 11 KB for mkit, 7 KB for mbuild). `scripts/budget.sh` enforces a budget per plugin.
 - Every skill ends with state on disk, so `/clear` is safe between steps.
 
 ## Multi-step runs
-`/mkit:run "<change>"` clarifies against the spec first, then plans ordered steps: `spec`, `build`, `action` (a literal command you approve once), `wait` (a literal check, exit 0 = true). It runs until a spec question, a failure, or a wait; then it parks. Resume with `/mkit:run`, or schedule `claude -p "/mkit:run"`: while the check fails it costs almost nothing. `.mkit/run.md` is local state; consider gitignoring it.
+`/mbuild:run "<change>"` clarifies against the spec first, then plans ordered steps: `spec`, `build`, `action` (a literal command you approve once), `wait` (a literal check, exit 0 = true). It runs until a spec question, a failure, or a wait; then it parks. Resume with `/mbuild:run`, or schedule `claude -p "/mbuild:run"`: while the check fails it costs almost nothing. `.mbuild/` is local state; consider gitignoring it.
 
 ## Develop
 ```bash
-bash test/run.sh        # CLI tests
-scripts/budget.sh       # prompt size budget
+bash test/run.sh          # mkit CLI tests
+bash mbuild/test/run.sh   # mbuild CLI tests (through the mkit seam)
+scripts/budget.sh         # prompt size budget, both plugins
 ```
