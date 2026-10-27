@@ -14,7 +14,7 @@ Four stages, top-down: **1 brief, 2 architecture, 3 requirements, 4 confirm**. Y
 Work one stage until the user is happy. Then end that stage with exactly: **"Stage N done? Say `ready`, or tell me what to change."** Only a bare `ready` from the user moves on (`mkit frame set <next stage>`). Anything else is an edit: apply it, show what changed, ask again. Never start the next stage's questions, or write its items, in the same turn. Never accept "looks fine" or silence as ready.
 
 ## Start or resume
-No SPEC.md: `mkit init`, then `mkit frame set brief`; read the brief once. SPEC.md exists: `mkit frame` says which stage you are in; `mkit show` (index) and continue from there. Skim the repo only for existing constraints (`git ls-files`, about 5 reads). Do not research; offer `/mkit:research` if a decision needs facts.
+No SPEC.md: `mkit init`, then `mkit frame set brief`; read the brief once. SPEC.md exists: `mkit frame` says which stage you are in; `mkit show` (index) and continue from there. "no frame in progress" on an existing spec: it was not framed this way; stop and use `/mkit:change`. Skim the repo only for existing constraints (`git ls-files`, about 5 reads). Do not research; offer `/mkit:research` if a decision needs facts.
 
 Questions go through AskUserQuestion, up to 4 per batch, 2-4 options, recommended first, always a "You decide" option. "You decide" records the recommendation with `By: delegated`. Write with one `mkit apply` per round (ops, not prose). If apply rejects, fix the op; nothing was written.
 

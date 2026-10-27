@@ -11,10 +11,10 @@ allowed-tools: Bash(mkit *) Bash(mbuild *) Bash(git *)
 Drive the spec to done, one slice per session. `$ARGUMENTS` overrides the slice (R IDs).
 
 ## 1. Orient
-`mbuild status`. Open Q or a failing `mkit check`: stop; send the user to `/mkit:frame` or `/mkit:change`. No `.mbuild/plan.md`: go to step 2. `mbuild status` lists `unsliced` Rs (added after the plan) or `reopened` ones: step 2, appending slices (`S<n+1>`); never re-plan built slices. All slices built and nothing unsliced: go to step 5.
+`mkit frame`: shows a `Stage` other than `done`: stop, finish `/mkit:frame`. Then `mbuild status`. Open Q or a failing `mkit check`: stop; send the user to `/mkit:frame` or `/mkit:change`. No `.mbuild/plan.md`: go to step 2. `mbuild status` lists `unsliced` Rs (added after the plan) or `reopened` ones: step 2, appending slices (`B<n+1>`); never re-plan built slices. All slices built and nothing unsliced: go to step 5.
 
 ## 2. Slice (once)
-Propose slices from `mkit show`: 1-3 Rs each, P0 first, one coherent surface. Slice 1 is a walking skeleton: the thinnest end-to-end R, plus the T items that prove the stack or a risky boundary. One AskUserQuestion: approve / change. Write `.mbuild/plan.md`, one line per slice: `S1: R1 R2`. Build nothing in this step; end with the checkpoint.
+Propose slices from `mkit show`: 1-3 Rs each, P0 first, one coherent surface (usually one layer, `Layer:` on the R). Slice 1 is a walking skeleton: the thinnest end-to-end R, plus the T items that prove the stack or a risky boundary. One AskUserQuestion: approve / change. Write `.mbuild/plan.md`, one line per slice: `B1: R1 R2`. Build nothing in this step; end with the checkpoint.
 
 ## 3. Build the slice
 `mkit brief $ARGUMENTS`, or with no arguments `mkit brief $(mbuild plan next)`. Build only what it lists. Anything the spec missed or you assumed: `mkit add "..." --bug|--feature|--adjust` and carry on. Never edit SPEC.md. A design choice not in the brief: ask with a recommendation.

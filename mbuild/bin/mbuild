@@ -3,7 +3,7 @@
 
 Reads the spec only through the mkit CLI (check, state, brief, done, add, apply); never touches SPEC.md.
 
-  mbuild plan [show|next|unsliced]   slices in .mbuild/plan.md, one per line: `S1: R1 R2`
+  mbuild plan [show|next|unsliced]   slices in .mbuild/plan.md, one per line: `B1: R1 R2`
                                      next = R ids of the first slice with unbuilt Rs
                                      unsliced = unbuilt Rs in no slice (added after the plan)
   mbuild status                      `mkit status` plus next slice and unsliced Rs
@@ -81,7 +81,7 @@ def spec_problems(root):
 
 
 # ---------------------------------------------------------------- plan
-PLAN_RE = re.compile(r"^S(\d+):\s*(.*)$")
+PLAN_RE = re.compile(r"^B(\d+):\s*(.*)$")
 
 
 def plan_parse(text):

@@ -7,7 +7,7 @@ allowed-tools: Bash(mkit *)
 
 # Handoff
 
-1. `mkit check`. Failing: stop and fix it (open Q go to the user, via `/mkit:frame` or `/mkit:change`).
+1. `mkit frame`: a `Stage` other than `done` means framing is unfinished; stop and send the user to `/mkit:frame`. Then `mkit check`. Failing: stop and fix it (open Q go to the user, via `/mkit:frame` or `/mkit:change`).
 2. `mkit brief $ARGUMENTS` (empty = every active R, P0 first). It writes `.mkit/brief.md`.
 3. Show the user the brief's size and the first three Rs.
 

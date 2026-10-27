@@ -93,7 +93,7 @@ Consequences:
 - Build orchestration, PR/issue templates and GitHub sync: out of scope (mkit stops at the handoff brief).
 
 ## Project lifecycle
-0. **Frame** (`frame`, then `ready`). 1. **Challenge** (`challenge premortem`; `research` for facts). 2. **Slice** (`build` proposes 1-3 R slices, walking skeleton first, saved to `.mkit/plan.md`). 3. **Build loop**, one slice per fresh session: `brief`, build, verify every acceptance bullet, `done`, commit. 4. **Triage** between slices; the spec changes only through `change`/`triage`. 5. **Review and close out**: `/mkit:review`, then `mkit status` shows all P0 built, P1/P2 built or moved to O, none reopened or unsliced, inbox empty, `check` clean.
+0. **Frame** (`frame`: brief, architecture, requirements, then the confirm table; the user says `ready` at each stage). 1. **Challenge** (`challenge premortem`; `research` for facts). 2. **Slice** (`build` proposes 1-3 R slices, walking skeleton first, saved to `.mbuild/plan.md`). 3. **Build loop**, one slice per fresh session: `brief`, build, verify every acceptance bullet, `done`, commit. 4. **Triage** between slices; the spec changes only through `change`/`triage`. 5. **Review and close out**: `/mkit:review`, then `mkit status` shows all P0 built, P1/P2 built or moved to O, none reopened or unsliced, inbox empty, `check` clean.
 
 ## Build plan (after you approve)
 1. Create `~/Projects/mkit` (git init), then `.claude-plugin/{plugin,marketplace}.json`, README, and `docs/design.md` (this plan, trimmed).

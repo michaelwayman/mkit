@@ -20,7 +20,7 @@ m apply "ADD R | One | Priority: P0 | Acceptance: a" "ADD R | Two | Acceptance: 
 
 # slices
 has noplan "$(b status)" "no .mbuild/plan.md"
-mkdir -p .mbuild; printf 'S1: R1\nS2: R2\n' > .mbuild/plan.md
+mkdir -p .mbuild; printf 'B1: R1\nB2: R2\n' > .mbuild/plan.md
 has slice1 "$(b status)" "next slice: R1"; eq next1 "$(b plan next)" "R1"
 has unsliced "$(b status)" "unsliced: R3"; eq unsliced_cmd "$(b plan unsliced)" "R3"
 m done R1 >/dev/null; eq next2 "$(b plan next)" "R2"

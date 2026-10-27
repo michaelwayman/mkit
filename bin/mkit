@@ -566,9 +566,9 @@ def cmd_frame(args):
     """One-line stage marker so a staged frame survives /clear. The skill owns the rules."""
     root = find_root()
     p = paths(root)
-    cur = (re.search(r"^Stage:\s*(\w+)", read(p["frame"]), re.M) or [None, "brief"])[1]
+    m = re.search(r"^Stage:\s*(\w+)", read(p["frame"]), re.M)
     if not args or args[0] == "show":
-        print("Stage %s (%s)" % (cur, " > ".join(STAGES)))
+        print("Stage %s (%s)" % (m.group(1), " > ".join(STAGES)) if m else "no frame in progress")
         return 0
     if args[0] != "set" or len(args) != 2 or args[1] not in STAGES:
         raise Err("usage: mkit frame [show] | set %s" % "|".join(STAGES))

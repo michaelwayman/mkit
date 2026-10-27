@@ -122,7 +122,8 @@ m apply "LOG | something happened" >/dev/null; has log_op "$(cat SPEC.md)" "some
 
 # services and layers, the stage marker and the decisions table
 cd "$T" && mkdir lp && cd lp && m init lay >/dev/null
-has frame_default "$(m frame)" "Stage brief"
+eq frame_none "$(m frame)" "no frame in progress"
+m frame set brief >/dev/null; has frame_brief "$(m frame)" "Stage brief"
 m apply "ADD Q | Outcome" >/dev/null; m apply "ANSWER Q1 | Online orders | By: you" >/dev/null
 m apply "ADD Q | Hosting?" >/dev/null; m apply "ANSWER Q2 | Cloudflare | By: delegated" >/dev/null
 m apply "ADD S | API | Owns: orders" "ADD S | Web | Owns: ui | Calls: S1" "ADD T | Postgres | Choice: pg | Why: relational" >/dev/null
