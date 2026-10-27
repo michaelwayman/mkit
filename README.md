@@ -2,7 +2,7 @@
 
 Requirements first. A Claude Code plugin for working out what to build: scope, out of scope, constraints, assumptions, open questions. Then a tiny brief to build from. No GitHub, and built to spend few tokens.
 
-Successor to challenge-kit, minus issue tracking, workers and review agents. Design and research: [docs/design.md](docs/design.md).
+Design and research: [docs/design.md](docs/design.md).
 
 ## Install
 ```bash
@@ -15,6 +15,7 @@ Dev loop: `claude --plugin-dir ~/Projects/mkit`, then `/reload-plugins`. Needs `
 1. `/mkit:frame [brief]`: interview, draft SPEC.md, `mkit check`, wait for `ready`.
 2. `/mkit:challenge [premortem|redteam|devil|first|drop]`: attack the spec; accepted findings become changes.
 3. `/mkit:handoff`: writes `.mkit/brief.md`; build from it in a fresh session.
+4. Whole project: `/mkit:build`, repeated. It slices the Rs once (`.mkit/plan.md`), then builds one slice per fresh session, verifies every acceptance bullet, and runs `mkit done`. `/mkit:triage` between slices; `mkit status` shows progress.
 
 Anytime:
 
@@ -34,7 +35,9 @@ Anytime:
 | `mkit add "<text>" [--bug\|--feature\|--adjust]` | one line into `.mkit/inbox.md` |
 | `mkit apply [op ...]` | change SPEC.md by small ops; validated, atomic, stable IDs, changelog |
 | `mkit check [--draft]` | the ready gate: no open Q, acceptance on every R, trace covered |
-| `mkit brief [IDs]` | builder handoff |
+| `mkit brief [IDs]` | builder handoff (no IDs: next slice, else every R not done) |
+| `mkit done IDs` | mark Rs built and verified |
+| `mkit status` | Rs done/todo, open Q, inbox, next slice |
 
 `mkit --help` lists the op grammar.
 
@@ -42,7 +45,7 @@ Anytime:
 - Skills and mkit do the mechanical work; the model emits 3-line ops, not file rewrites.
 - Skills read the index, then only the IDs they need. SPEC.md is never read whole.
 - No subagents by default; research is opt-in and capped. Triage runs on Haiku.
-- Plugin prompts total about 10 KB (challenge-kit: about 89 KB). `scripts/budget.sh` enforces a budget.
+- Plugin prompts are small (about 10 KB). `scripts/budget.sh` enforces a budget.
 - Every skill ends with state on disk, so `/clear` is safe between steps.
 
 ## Develop

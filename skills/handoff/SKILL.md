@@ -13,7 +13,7 @@ allowed-tools: Bash(mkit *)
 
 Then tell them how to build, in one block:
 - New session, `/clear`, then: "Build from `.mkit/brief.md`. Ask before anything not in it."
-- Build one R at a time for the cheapest runs: `mkit brief R1`.
+- Build one R at a time for the cheapest runs: `mkit brief R1`. For a whole project, use `/mkit:build`: it slices the work and verifies each slice.
 - Found something the spec missed while building: `mkit add "..." --bug|--feature|--adjust` and keep going. Do not edit SPEC.md.
 
 Do not build anything yourself.

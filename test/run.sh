@@ -89,6 +89,22 @@ has snippet_trigger "$(cat CLAUDE.md)" "When to use what"
 # round trip: no-op apply leaves content stable
 a=$(cat SPEC.md); m apply "ALTER R3 | Title: Export data" >/dev/null; diff <(echo "$a" | grep -v mkit) <(grep -v mkit SPEC.md) >/dev/null && ok || bad "roundtrip stable (modulo changelog)"
 
+# done, status, slices (R1 is removed here; R3 and R5 are active)
+out=$(m done R99); has "done missing" "$out" "no such id"
+out=$(m done O1); has "done non-R" "$out" "not an active requirement"
+out=$(m done R1); has "done removed" "$out" "not an active requirement"
+printf 'S1: R3\nS2: R5\n' > .mkit/plan.md
+has slice1 "$(m status)" "next slice: R3"
+b=$(m brief); has slice_brief "$b" "R3"; hasnt slice_brief2 "$b" "R5"
+out=$(m done R3); has done_ok "$out" "applied 1 op(s)"
+has built "$(m show R3)" "Built:"; has idx_done "$(m show)" "R3 [P1 done]"
+has changelog_done "$(cat SPEC.md)" "DONE R3"
+has status_done "$(m status)" "R3 [P1] done"; has slice2 "$(m status)" "next slice: R5"
+b=$(m brief); has slice2_brief "$b" "R5"; hasnt slice2_brief2 "$b" "Export data"
+b=$(m brief R3); has explicit_ids "$b" "Export data"
+m done R5 >/dev/null; has all_built "$(m status)" "all slices built"
+rm .mkit/plan.md; hasnt noplan_skips_done "$(m brief)" "**R"
+
 # outside a project
 cd "$T" && mkdir empty && cd empty
 out=$(m show); has "no project" "$out" "no SPEC.md"

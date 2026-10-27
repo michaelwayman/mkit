@@ -7,6 +7,9 @@
   mkit apply [op ...]            ops as args, or one per line on stdin
   mkit check [--draft]           full gate by default; --draft = structure only
   mkit brief [ID...]             builder handoff, written to .mkit/brief.md
+                                 (no IDs: the next slice in .mkit/plan.md, else every R not done)
+  mkit done ID...                mark Rs built and verified (same as the DONE op)
+  mkit status                    progress: Rs done/todo, open Q, open inbox, next slice
 
 Op grammar: VERB ARGS | Title-or-text | Key: value | Key+: more
   ADD R | Title | Priority: P0 | Acceptance: one; two
@@ -16,6 +19,9 @@ Op grammar: VERB ARGS | Title-or-text | Key: value | Key+: more
   ANSWER Q2 | text | By: you|delegated
   TRACE | brief bullet | R1
   RESOLVE I3 | R4
+  DONE R1 R2                     (R built and verified; sets Built: <date>)
+
+Slices live in .mkit/plan.md, one per line: `S1: R1 R2`.
 """
 import datetime
 import os
@@ -201,7 +207,8 @@ def find_root(create=False):
 def paths(root):
     m = os.path.join(root, ".mkit")
     return {"spec": os.path.join(root, "SPEC.md"), "dir": m, "inbox": os.path.join(m, "inbox.md"),
-            "index": os.path.join(m, "index.md"), "brief": os.path.join(m, "brief.md")}
+            "index": os.path.join(m, "index.md"), "brief": os.path.join(m, "brief.md"),
+            "plan": os.path.join(m, "plan.md")}
 
 
 def read(p, default=""):
@@ -323,7 +330,7 @@ def index_line(i):
     if i.removed:
         tag = "removed"
     elif i.prefix == "R":
-        tag = i.get("Priority", "P1")
+        tag = i.get("Priority", "P1") + (" done" if i.get("Built") else "")
     elif i.prefix == "Q":
         tag = "answered" if i.get("Answer") else "open"
     elif i.prefix == "A":
@@ -457,6 +464,16 @@ def apply_op(doc, rows, op):
         else:
             doc.trace.append([segs[1], segs[2]])
         log(doc, "TRACE %s" % segs[2])
+    elif verb == "DONE":
+        ids = [x for x in re.split(r"[,\s]+", " ".join(rest + segs[1:])) if x]
+        if not ids:
+            raise Err("DONE R<n> [R<n> ...]")
+        for id_ in ids:
+            it = doc.find(id_)
+            if it.prefix != "R" or it.removed:
+                raise Err("%s is not an active requirement" % id_)
+            it.set("Built", today())
+        log(doc, "DONE %s" % " ".join(ids))
     elif verb == "RESOLVE":
         m = re.match(r"^I(\d+)$", rest[0] if rest else "")
         row = next((r for r in rows if m and r["n"] == int(m.group(1))), None)
@@ -494,6 +511,59 @@ def cmd_apply(args):
     return 0
 
 
+# ---------------------------------------------------------------- plan
+PLAN_RE = re.compile(r"^S(\d+):\s*(.*)$")
+
+
+def plan_parse(text):
+    out = []
+    for l in text.split("\n"):
+        m = PLAN_RE.match(l.strip())
+        if m:
+            out.append((int(m.group(1)), re.findall(r"R\d+", m.group(2))))
+    return out
+
+
+def next_slice(doc, plan):
+    """R ids of the first slice that still has unbuilt, active Rs."""
+    ids = {i.id: i for i in doc.items()}
+    for _, rs in plan:
+        todo = [x for x in rs if x in ids and not ids[x].removed and not ids[x].get("Built")]
+        if todo:
+            return todo
+    return []
+
+
+def cmd_done(args):
+    if not args:
+        raise Err("usage: mkit done R<n> [R<n> ...]")
+    return cmd_apply(["DONE " + " ".join(args)])
+
+
+def cmd_status(args):
+    root = find_root()
+    p = paths(root)
+    doc = load(root)
+    rs = [i for i in doc.items() if i.prefix == "R" and not i.removed]
+    rs.sort(key=lambda i: (i.get("Priority"), i.num))
+    done = [i for i in rs if i.get("Built")]
+    openq = [i for i in doc.items() if i.prefix == "Q" and not i.removed and not i.get("Answer")]
+    inbox = [r for r in inbox_parse(read(p["inbox"])) if not r["done"]]
+    print("R done %d/%d (P0 %d/%d)" % (
+        len(done), len(rs), len([i for i in done if i.get("Priority") == "P0"]),
+        len([i for i in rs if i.get("Priority") == "P0"])))
+    for i in rs:
+        print("  %s [%s] %s %s" % (i.id, i.get("Priority"), "done" if i.get("Built") else "todo", i.title))
+    print("open Q %d, inbox %d" % (len(openq), len(inbox)))
+    plan = plan_parse(read(p["plan"]))
+    if not plan:
+        print("next slice: (no .mkit/plan.md)")
+    else:
+        nxt = next_slice(doc, plan)
+        print("next slice: " + (" ".join(nxt) if nxt else "(all slices built)"))
+    return 0
+
+
 # ---------------------------------------------------------------- brief
 def cmd_brief(args):
     root = find_root()
@@ -501,7 +571,10 @@ def cmd_brief(args):
     doc = load(root)
     errs = problems(doc, ready=True)
     live = [i for i in doc.items() if not i.removed]
-    pick = [i for i in live if i.prefix == "R" and (not args or i.id in args)]
+    if not args:
+        args = next_slice(doc, plan_parse(read(p["plan"]))) or [
+            i.id for i in live if i.prefix == "R" and not i.get("Built")]
+    pick = [i for i in live if i.prefix == "R" and i.id in args]
     pick.sort(key=lambda i: (i.get("Priority"), i.num))
     out = ["# Build brief", "",
            "Build only what is listed. Out-of-scope items are decisions, not gaps. "
@@ -577,7 +650,7 @@ def cmd_init(args):
 
 
 COMMANDS = {"init": cmd_init, "show": cmd_show, "add": cmd_add, "apply": cmd_apply,
-            "check": cmd_check, "brief": cmd_brief}
+            "check": cmd_check, "brief": cmd_brief, "done": cmd_done, "status": cmd_status}
 
 
 def main(argv):

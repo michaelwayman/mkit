@@ -46,17 +46,18 @@ SPEC.md              single source of truth; stable IDs, never renumbered
 ```
 SPEC.md sections: Constraints `C`, Assumptions `A`, Requirements `R` (priority P0-P2, acceptance bullets), Out of scope `O` (with why and revisit trigger), Open questions `Q`, Decisions (Question, Answer, Decided by you or delegated, Source), Technology `T`, Deliverables trace, Changelog. Milestones, time box, grade, estimates and services/contracts are dropped from the core. Time box becomes one optional constraint row.
 
-### Skills (7)
+### Skills (8)
 - `/mkit:frame [brief]`: intake, then interview. Covers intent, users, success criteria, constraints, scope, out-of-scope, assumptions. Drafts SPEC.md, puts every Q to the user in batches, then does a lint gate and a final review table and waits for `ready`.
 - `/mkit:challenge [mode]`: adversarial pass over an existing SPEC: pre-mortem, red team, devil's advocate, first principles, "what if constraint C3 were false". It outputs a short findings list, and the user accepts each as a change.
 - `/mkit:research [topic | ask "q"]`: opt-in fact-finding before a decision.
 - `/mkit:change "<change>"`: operations on R/O/A/C/T, a 5-line impact view, user confirms, the edit and changelog delta are applied, and the index is regenerated. No PRs or issue sync.
 - `/mkit:triage`: one batched pass over `.mkit/inbox.md`. Each line is classified as a bug or small fix to an existing R, an adjustment, or a new feature or scope change (which goes to `change`). Proposes edits and resolves the lines.
+- `/mkit:build [R…]`: the driver for a whole project. Slices the Rs once into `.mkit/plan.md`, then per fresh session: brief the next slice, build, verify every acceptance bullet, `mkit done`, commit, checkpoint. Spec changes only through `change`/`triage`.
 - `/mkit:handoff [R…]`: runs `mkit brief` and adds the builder's acceptance checks.
 - `/mkit:learn "<correction>"`: appends to the project's learned rules or proposes a kit patch.
 
 ### Module design: one deep `Spec` module (codebase-design lens)
-The first draft had a 9-subcommand helper (`index`, `lint`, `list`, `show`, ...). That is a wide interface over thin implementations, and the skills would each re-implement ID handling. Revised: **one deep module, `Spec`, behind a 5-verb interface**. Callers (the skills, the user's shell, the hook) cross the same seam, and tests cross it too.
+The first draft had a 9-subcommand helper (`index`, `lint`, `list`, `show`, ...). That is a wide interface over thin implementations, and the skills would each re-implement ID handling. Revised: **one deep module, `Spec`, behind a small verb interface**. Callers (the skills, the user's shell, the hook) cross the same seam, and tests cross it too.
 
 | Verb | Interface | Hidden behind it |
 |---|---|---|
@@ -64,7 +65,9 @@ The first draft had a 9-subcommand helper (`index`, `lint`, `list`, `show`, ...)
 | `mkit add "<text>" [--bug\|--feature\|--adjust]` | append to inbox, 0 tokens | file format, dating, dedupe |
 | `mkit apply <ops>` | apply a small delta: `ADD R "..."`, `ALTER R3 ...`, `REMOVE R3 "why"`, `MOVE R3 O`, `ANSWER Q2 "..."`, `RESOLVE inbox#4` | ID allocation and never-reuse, `was R3` cross-references, changelog line, trace upkeep, index regen, and **`check` run before writing** |
 | `mkit check` | pass/fail with reasons | unique IDs, acceptance present, no unanswered Q, trace covered, no active R touching an O |
-| `mkit brief [IDs]` | builder handoff (about 1.5k tokens) | selection, ordering, trimming |
+| `mkit brief [IDs]` | builder handoff (about 1.5k tokens); no IDs = next slice in `.mkit/plan.md`, else every R not done | selection, ordering, trimming |
+| `mkit done IDs` | mark Rs built and verified (the `DONE` op: `Built:` date + changelog) | validation, atomic write |
+| `mkit status` | Rs done/todo, open Q, inbox, next slice | read-only |
 
 Consequences:
 - **Invariants live in one place (locality).** `apply` cannot write an invalid SPEC, so skills never validate and no PostToolUse lint hook is needed.
@@ -79,6 +82,9 @@ Consequences:
 - Fit check in `frame`: dropped. Open point: confirm.
 - Research defaults to off. Open point: confirm.
 - Build orchestration, PR/issue templates and GitHub sync: out of scope (mkit stops at the handoff brief).
+
+## Project lifecycle
+0. **Frame** (`frame`, then `ready`). 1. **Challenge** (`challenge premortem`; `research` for facts). 2. **Slice** (`build` proposes 1-3 R slices, walking skeleton first, saved to `.mkit/plan.md`). 3. **Build loop**, one slice per fresh session: `brief`, build, verify every acceptance bullet, `done`, commit. 4. **Triage** between slices; the spec changes only through `change`/`triage`. 5. **Close out**: `mkit status` shows all P0 built, P1/P2 built or moved to O, inbox empty, `check` clean.
 
 ## Build plan (after you approve)
 1. Create `~/Projects/mkit` (git init), then `.claude-plugin/{plugin,marketplace}.json`, README, and `docs/design.md` (this plan, trimmed).
