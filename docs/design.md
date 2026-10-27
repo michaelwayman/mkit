@@ -1,13 +1,13 @@
-# mkit: requirements-first successor to challenge-kit
+# mkit: requirements-first spec plugin
 
 ## Context
-challenge-kit (private; local clone `~/Projects/challenge-kit`) takes a brief to a SPEC, GitHub tracking and parallel reviewed workers. About 89 KB of prompts, 13 skills, 3 agents and a 246-line `gh` wrapper, with GitHub as the only store of operational state. mkit keeps the part that works best (requirements, scope, out-of-scope, challenged assumptions and constraints, `change-spec`) and drops GitHub and the build orchestration. Two new goals: filing a bug, feature or adjustment should take one line, and token spend should be far lower.
+mkit takes a brief to a SPEC: requirements, scope, out-of-scope, and challenged assumptions and constraints, with changes recorded as small deltas. It has no GitHub dependency and no build orchestration. Two goals: filing a bug, feature or adjustment should take one line, and token spend should be low.
 
 Decisions already made with you:
 - **Scope:** spec + handoff. mkit gathers and challenges requirements, maintains SPEC.md and a local backlog, then emits a tiny brief that plain Claude Code builds from. No workers, PRs or reviewers.
 - **Backlog:** a one-line `mkit add` into a local inbox, triaged later in one batched pass.
 - **Form:** Claude Code plugin + a small zero-token shell helper `mkit`.
-- New package `mkit`, new project at `~/Projects/mkit`, skills invoked as `/mkit:<name>`. Do not build on challenge-kit's unfinished `github-optional` worktree, because it keeps GitHub as an option. Borrow its local-state idea only.
+- Package `mkit`, project at `~/Projects/mkit`, skills invoked as `/mkit:<name>`. State is local files only; GitHub is not an option.
 
 ## What others do, and what we take (research)
 Sources: [spec-driven frameworks compared](https://developertoolkit.ai/en/ecosystem/frameworks/spec-driven-frameworks/), [SDD tools overview](https://ssojet.com/blog/best-spec-driven-development-tools), [advanced elicitation modes](https://cat-docs.dev.nvoicepay.com/how-to/use-advanced-elicitation/), [pre-mortem](https://godofprompt.ai/prompt-library/analyze-project-failure-risks). I checked the official docs only for cost ([Claude Code costs](https://code.claude.com/docs/en/costs)). Descriptions of Spec Kit, OpenSpec and BMAD come from secondary blogs and are unverified.
@@ -24,14 +24,14 @@ Sources: [spec-driven frameworks compared](https://developertoolkit.ai/en/ecosys
 ## Cost strategy (built into the design, and measurable)
 Official guidance (costs page): context size drives cost; clear between tasks; Sonnet by default and Haiku for simple subagents; skills load on demand while CLAUDE.md loads always; hooks and scripts can preprocess; subagents isolate verbose work but each adds its own requests; lower effort for simple tasks.
 1. **Deterministic work lives in the `Spec` module, not the model.** `show`, `add`, `apply`, `check`, `brief` cost 0 tokens themselves, and the model emits small ops deltas instead of rewriting files.
-2. **Index + slice reading.** `mkit index` writes `.mkit/index.md`, one line per ID. Skills read the index and then `mkit show R3 O1`, never the whole SPEC. This stops the recurring cost of re-reading the 25 KB SPEC and 78 KB research file that challenge-kit workers paid every time.
+2. **Index + slice reading.** `mkit index` writes `.mkit/index.md`, one line per ID. Skills read the index and then `mkit show R3 O1`, never the whole SPEC. This avoids re-reading a large SPEC and research file on every skill run.
 3. **Tiny always-loaded footprint.** The CLAUDE.md snippet mkit installs is at most 15 lines. Everything else sits in on-demand skills.
 4. **Per-skill `model:` and effort.** `add`/`triage` classification on Haiku; `research` and `change` on Sonnet; the `frame` interview and `challenge` on the session model, since they are the only places depth pays off.
 5. **Batch everything.** Questions go out in AskUserQuestion batches of up to 4. Inbox triage handles N items in one pass.
 6. **Research is opt-in and capped.** Default: no research agents. `research <topic>` runs one Sonnet researcher with a ~15-call cap. `research.md` is summary-first, and only the summary is loaded by default.
-7. **No subagents unless fan-out is real.** There are no review or plan agents, and nothing runs twice (challenge-kit ran about 4 review-agent passes per PR).
+7. **No subagents unless fan-out is real.** There are no review or plan agents, and nothing runs twice.
 8. **Every skill ends with a checkpoint.** State is on disk, so `/clear` is safe and the next skill resumes from files.
-9. **Prompt budget enforced.** Each SKILL.md targets 2.5 KB or less and the whole plugin 25 KB or less (about 70% under challenge-kit). `mkit tokens` reports sizes and fails over budget.
+9. **Prompt budget enforced.** Each SKILL.md targets 2.5 KB or less and the whole plugin 25 KB or less. `mkit tokens` reports sizes and fails over budget.
 10. **Cache-friendly.** Static instructions come first and per-project data last, and mkit never rewrites CLAUDE.md mid-session.
 
 ## Design
@@ -46,14 +46,14 @@ SPEC.md              single source of truth; stable IDs, never renumbered
 ```
 SPEC.md sections: Constraints `C`, Assumptions `A`, Requirements `R` (priority P0-P2, acceptance bullets), Out of scope `O` (with why and revisit trigger), Open questions `Q`, Decisions (Question, Answer, Decided by you or delegated, Source), Technology `T`, Deliverables trace, Changelog. Milestones, time box, grade, estimates and services/contracts are dropped from the core. Time box becomes one optional constraint row.
 
-### Skills (7, down from 13)
-- `/mkit:frame [brief]` (replaces kickoff): intake, then interview. Covers intent, users, success criteria, constraints, scope, out-of-scope, assumptions. Drafts SPEC.md, puts every Q to the user in batches, then does a lint gate and a final review table and waits for `ready`.
+### Skills (7)
+- `/mkit:frame [brief]`: intake, then interview. Covers intent, users, success criteria, constraints, scope, out-of-scope, assumptions. Drafts SPEC.md, puts every Q to the user in batches, then does a lint gate and a final review table and waits for `ready`.
 - `/mkit:challenge [mode]`: adversarial pass over an existing SPEC: pre-mortem, red team, devil's advocate, first principles, "what if constraint C3 were false". It outputs a short findings list, and the user accepts each as a change.
-- `/mkit:research [topic | ask "q"]`: slimmed down from challenge-kit's research; opt-in.
-- `/mkit:change "<change>"` (replaces change-spec): operations on R/O/A/C/T, a 5-line impact view, user confirms, the edit and changelog delta are applied, and the index is regenerated. No PRs or issue sync.
+- `/mkit:research [topic | ask "q"]`: opt-in fact-finding before a decision.
+- `/mkit:change "<change>"`: operations on R/O/A/C/T, a 5-line impact view, user confirms, the edit and changelog delta are applied, and the index is regenerated. No PRs or issue sync.
 - `/mkit:triage`: one batched pass over `.mkit/inbox.md`. Each line is classified as a bug or small fix to an existing R, an adjustment, or a new feature or scope change (which goes to `change`). Proposes edits and resolves the lines.
 - `/mkit:handoff [R…]`: runs `mkit brief` and adds the builder's acceptance checks.
-- `/mkit:learn "<correction>"` (replaces record-correction): appends to the project's learned rules or proposes a kit patch.
+- `/mkit:learn "<correction>"`: appends to the project's learned rules or proposes a kit patch.
 
 ### Module design: one deep `Spec` module (codebase-design lens)
 The first draft had a 9-subcommand helper (`index`, `lint`, `list`, `show`, ...). That is a wide interface over thin implementations, and the skills would each re-implement ID handling. Revised: **one deep module, `Spec`, behind a 5-verb interface**. Callers (the skills, the user's shell, the hook) cross the same seam, and tests cross it too.
@@ -73,23 +73,12 @@ Consequences:
 - **No speculative seam.** There is one storage adapter, the markdown file, so no storage abstraction. A second backend would justify one.
 - Implementation: bash+awk to start; if the parser outgrows it, swap to a single Node/Python file behind the same five verbs, which is cheap precisely because the interface is small.
 
-### Behavior review: each challenge-kit portion
-| Portion | Decision | Open point for you |
-|---|---|---|
-| kickoff | Keep as `frame`, dropping GitHub render/PR/sync and grade/fit-check | Keep the fit check at all? I'd drop it |
-| research + researcher | Keep, opt-in, one agent, capped | Default off OK? |
-| Priorities (constraint vs preference) | Keep, folded into `C` | |
-| Decisions asked + "you decide" | Keep as is | |
-| Deliverables trace | Keep, enforced by `lint` | |
-| change-spec | Keep as `change`, no PR/issues | |
-| report | Merge into `add` + `triage` | |
-| replan, grades.md, estimates | Drop (time box is just a constraint) | Confirm you don't need S/M/L estimates |
-| milestones | Drop (priority only) | Confirm |
-| services/contracts/boundaries | Drop from core | Do you want these for multi-service briefs? Could be an optional section |
-| orchestrate, work-issue, review-pr, integrate, bundle, sync-github, ck-github, issue/PR templates | Drop | |
-| eject | Drop (nothing to eject; the plugin is small) | |
-| record-correction | Keep as `learn` | |
-| AGENTS.md render | Replace with the 15-line CLAUDE.md snippet | |
+### Left out of the core
+- Milestones, grades, time estimates and replanning: priority only; the time box is one optional constraint.
+- Services, contracts and boundaries: not in the core. Open point: an optional section for multi-service briefs?
+- Fit check in `frame`: dropped. Open point: confirm.
+- Research defaults to off. Open point: confirm.
+- Build orchestration, PR/issue templates and GitHub sync: out of scope (mkit stops at the handoff brief).
 
 ## Build plan (after you approve)
 1. Create `~/Projects/mkit` (git init), then `.claude-plugin/{plugin,marketplace}.json`, README, and `docs/design.md` (this plan, trimmed).
@@ -102,6 +91,6 @@ Consequences:
 - Shell tests pass; `shellcheck bin/mkit` clean; `claude plugin validate` passes.
 - `mkit tokens` is within budget (each skill 2.5 KB or less, plugin 25 KB or less).
 - Grep for `gh `, `github`, `milestone`, `issue`, `PR` in the plugin returns zero hits (apart from README prose about what was dropped).
-- Dry run `frame` on the same brief used in `~/P/ck-dryrun` (`CHALLENGE.md`) with `--plugin-dir`. Check the Q gate, the trace and the challenge output. Compare `/usage` totals with a challenge-kit run of the same brief; target at least 50% fewer tokens.
+- Dry run `frame` on a sample brief with `--plugin-dir`. Check the Q gate, the trace and the challenge output, and record `/usage` totals as the token baseline.
 - Add 3 inbox lines (bug, adjustment, feature), run `triage`, and check each is routed correctly and `index` is regenerated.
 - `change` removes an R, moves one to O and back, and IDs stay stable.
