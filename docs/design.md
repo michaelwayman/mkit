@@ -29,7 +29,7 @@ Official guidance (costs page): context size drives cost; clear between tasks; S
 4. **Per-skill `model:` and effort.** `add`/`triage` classification on Haiku; `research` and `change` on Sonnet; the `frame` interview and `challenge` on the session model, since they are the only places depth pays off.
 5. **Batch everything.** Questions go out in AskUserQuestion batches of up to 4. Inbox triage handles N items in one pass.
 6. **Research is opt-in and capped.** Default: no research agents. `research <topic>` runs one Sonnet researcher with a ~15-call cap. `research.md` is summary-first, and only the summary is loaded by default.
-7. **No subagents unless fan-out is real.** There are no review or plan agents, and nothing runs twice.
+7. **No subagents unless fan-out is real.** There are no review or plan agents by default and nothing runs twice; `/mbuild:auto` is the opt-in exception (one review session per slice).
 8. **Every skill ends with a checkpoint.** State is on disk, so `/clear` is safe and the next skill resumes from files.
 9. **Prompt budget enforced.** Each SKILL.md targets 2.5 KB or less and the whole plugin 25 KB or less. `mkit tokens` reports sizes and fails over budget.
 10. **Cache-friendly.** Static instructions come first and per-project data last, and mkit never rewrites CLAUDE.md mid-session.
@@ -52,7 +52,7 @@ The spec side (what and why) changes slowly, needs your judgement and works with
 - **mbuild**: `build`, `run`, `review`, slices (`.mbuild/plan.md`) and run state (`.mbuild/run.md`). It never reads or writes SPEC.md. Its whole interface to the spec is `mkit brief`, `state`, `check`, `done`, `add` (and `apply` for a run's pause question and changelog line).
 - Any other builder can use the same calls. mbuild's own CLI reads the spec only through them, and its tests do the same.
 
-### Skills: mkit (7) and mbuild (3)
+### Skills: mkit (7) and mbuild (4)
 - `/mkit:frame [brief]`: four gated stages (brief, architecture, requirements, confirm); the user says `ready` before each next one, and the decisions table is confirmed before the spec is final. Services and layers are `S` items; every R names its `Layer`; `check` flags an S with no R unless `None:` gives the reason. The skill holds the rules; `mkit frame` only records the stage. Earlier text: intake, then interview. Covers intent, users, success criteria, constraints, scope, out-of-scope, assumptions. Drafts SPEC.md, puts every Q to the user in batches, then does a lint gate and a final review table and waits for `ready`.
 - `/mkit:challenge [mode]`: adversarial pass over an existing SPEC: pre-mortem, red team, devil's advocate, first principles, "what if constraint C3 were false". It outputs a short findings list, and the user accepts each as a change.
 - `/mkit:research [topic | ask "q"]`: opt-in fact-finding before a decision.
@@ -60,6 +60,7 @@ The spec side (what and why) changes slowly, needs your judgement and works with
 - `/mkit:triage`: one batched pass over `.mkit/inbox.md`. Each line is classified as a bug or small fix to an existing R, an adjustment, or a new feature or scope change (which goes to `change`). Proposes edits and resolves the lines.
 - `/mbuild:build [R…]`: the driver for a whole project. Slices the Rs once into `.mbuild/plan.md`, then per fresh session: brief the next slice, build, verify every acceptance bullet, `mkit done`, commit, checkpoint. Spec changes only through `change`/`triage`.
 - `/mbuild:run ["<change>" | triage]`: orchestrates a multi-step change. Clarifies against the spec, plans `spec`/`build`/`action`/`wait` steps into `.mkit/run.md`, runs until a spec question, failure or wait, then parks and resumes. It is a skill, not an agent: a subagent cannot ask questions or park mid-run. `mbuild run` enforces the guards (no build step while `check` fails or an R is removed/moved to O; no unapproved action; strict order).
+- `/mbuild:auto [--max-slices N]`: unattended slice loop. A thin skill launches `mbuild auto run`, which spawns a fresh `claude -p` per build, review and fix. Gates live in the CLI: every acceptance bullet recorded `pass` in `verify.md`, then a review with no blocking finding; only then the driver runs `mkit done` and commits. Fixed triage: fail/bug get 2 fix passes, drift is filed `--adjust`, a broken C or touched O stops. Stop reasons (`spec`, `acceptance`, `decision`, `budget`, `finished`) trigger a PushNotification from the skill.
 - `/mbuild:review [R…]`: opt-in, one read-only reviewer agent checks a diff against the spec: each acceptance bullet, each C, scope drift into O, concrete bugs. Findings go to the inbox; it never edits code or SPEC.md.
 - `/mkit:handoff [R…]`: runs `mkit brief` and adds the builder's acceptance checks.
 - `/mkit:learn "<correction>"`: appends to the project's learned rules or proposes a kit patch.

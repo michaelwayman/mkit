@@ -73,5 +73,65 @@ m apply "ANSWER Q2 | no" >/dev/null
 has resumed_paused "$(b run next)" "BLOCKED"
 echo "$(b run show)" | grep -q "Status: running" && ok || bad "status running after answer"
 
+# auto: fake claude drives build/review/fix; the driver alone marks done
+cat > "$T/fakeclaude" <<'FAKE'
+#!/usr/bin/env bash
+# behaviour comes from $FAKE_DIR/<mode> files; prompt is $2
+d=$(ls -d .mbuild/auto/B* 2>/dev/null | tail -1)
+case "$2" in
+  /mbuild:build*) n=$(grep -c . "$FAKE_DIR/builds" 2>/dev/null || echo 0); echo x >> "$FAKE_DIR/builds"
+    mkdir -p "$d"; echo "work $n" >> work.txt
+    [ -f "$FAKE_DIR/needs" ] && cat "$FAKE_DIR/needs" > "$d/NEEDS"
+    cat "$FAKE_DIR/verify" > "$d/verify.md" 2>/dev/null;;
+  /mbuild:review*) echo r >> "$FAKE_DIR/reviews"; cp "$FAKE_DIR/review" "$d/review.json";;
+  *) echo f >> "$FAKE_DIR/fixes"; [ -f "$FAKE_DIR/verify2" ] && cp "$FAKE_DIR/verify2" "$d/verify.md";;
+esac
+exit 0
+FAKE
+chmod +x "$T/fakeclaude"; export CLAUDE="$T/fakeclaude"
+newproj() { cd "$T" && rm -rf ap fk && mkdir ap fk && cd ap && git init -q && git config user.email t@t && git config user.name t
+  m init a >/dev/null; m apply "ADD R | One | Priority: P0 | Acceptance: a works; b works" "ADD R | Two | Acceptance: c works" >/dev/null
+  mkdir -p .mbuild; printf 'B1: R1\nB2: R2\n' > .mbuild/plan.md; git add -A; git commit -qm init; export FAKE_DIR="$T/fk"
+  printf 'R1.1 | pass | ok\nR1.2 | pass | ok\n' > "$FAKE_DIR/verify"; echo '{"findings":[]}' > "$FAKE_DIR/review"; }
+fl() { [ -f "$FAKE_DIR/$1" ] && grep -c . "$FAKE_DIR/$1" || echo 0; }
+
+newproj
+has auto_notready "$(b auto check)" "ok"
+out=$(b auto run --max-slices 1); rc=$?
+has auto_budget "$out" "STOP budget"; eq auto_budget_rc "$rc" 3
+eq auto_r1_built "$(m state R1)" "R1 built"; eq auto_r2_todo "$(m state R2)" "R2 todo"
+eq auto_commit "$(git log --format=%s -1)" "B1: R1"
+printf 'R2.1 | pass | ok\n' > "$FAKE_DIR/verify"
+out=$(b auto run); rc=$?; has auto_finished "$out" "STOP finished"; eq auto_fin_rc "$rc" 0
+eq auto_r2_built "$(m state R2)" "R2 built"
+
+# failing bullet is never marked done: two fix passes, then stop
+newproj; printf 'R1.1 | pass | ok\nR1.2 | fail | 500\n' > "$FAKE_DIR/verify"
+out=$(b auto run); rc=$?
+has auto_acc "$out" "STOP acceptance"; eq auto_acc_rc "$rc" 6; eq auto_fixes "$(fl fixes)" 2
+eq auto_not_done "$(m state R1)" "R1 todo"; eq auto_no_review "$(fl reviews)" 0
+has auto_bug_filed "$(m show --inbox)" "B1:"
+# missing bullet counts as unverified
+newproj; printf 'R1.1 | pass | ok\n' > "$FAKE_DIR/verify"
+has auto_missing "$(b auto run)" "STOP acceptance"; eq auto_missing_todo "$(m state R1)" "R1 todo"
+# fix pass can repair it
+newproj; printf 'R1.1 | fail | x\nR1.2 | pass | ok\n' > "$FAKE_DIR/verify"; printf 'R1.1 | pass | fixed\nR1.2 | pass | ok\n' > "$FAKE_DIR/verify2"
+out=$(b auto run --max-slices 1); has auto_fixed "$out" "STOP budget"; eq auto_fixed_built "$(m state R1)" "R1 built"
+# review: bug blocks, constraint stops, drift is filed and passes
+newproj; echo '{"findings":[{"kind":"constraint","text":"breaks C1"}]}' > "$FAKE_DIR/review"
+out=$(b auto run); rc=$?; has auto_spec "$out" "STOP spec"; eq auto_spec_rc "$rc" 6; eq auto_spec_todo "$(m state R1)" "R1 todo"
+newproj; echo '{"findings":[{"kind":"drift","text":"adds export button"}]}' > "$FAKE_DIR/review"
+b auto run --max-slices 1 >/dev/null; eq auto_drift_built "$(m state R1)" "R1 built"; has auto_drift_filed "$(m show --inbox)" "export button"
+newproj; echo '{"findings":[{"kind":"bug","text":"null crash"}]}' > "$FAKE_DIR/review"
+has auto_bug "$(b auto run)" "STOP acceptance"; eq auto_bug_todo "$(m state R1)" "R1 todo"
+newproj; echo 'not json' > "$FAKE_DIR/review"
+has auto_badreview "$(b auto run)" "no valid review.json"; eq auto_badreview_todo "$(m state R1)" "R1 todo"
+# a session asking for a human stops the run
+newproj; echo "Which region?" > "$FAKE_DIR/needs"
+out=$(b auto run); rc=$?; has auto_decision "$out" "STOP decision"; eq auto_decision_rc "$rc" 4; eq auto_needs_todo "$(m state R1)" "R1 todo"
+# preflight: open Q or unsliced Rs refuse to start
+newproj; m apply "ADD Q | Which?" >/dev/null; has auto_q "$(b auto check)" "NOT READY"
+newproj; m apply "ADD R | Loose | Acceptance: z" >/dev/null; has auto_unsliced "$(b auto check)" "unsliced Rs R3"
+unset CLAUDE
 
 echo "passed $pass, failed $fail"; [ "$fail" = 0 ]

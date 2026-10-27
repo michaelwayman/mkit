@@ -43,6 +43,7 @@ Anytime:
 | Multi-step change with merges, migrations, waits (pauses to ask; resumable) | `/mbuild:run "<change>"`, `/mbuild:run` to resume, `/mbuild:run triage` |
 | Get facts before a decision | `/mkit:research <topic>` / `ask "<question>"` |
 | Check built work against the spec | `/mbuild:review [R IDs]` |
+| Build every remaining slice unattended (needs a sliced plan; stops and notifies) | `/mbuild:auto [--max-slices N]` |
 | Turn a correction into a rule | `/mkit:learn "<what went wrong>"` |
 
 ## The `mkit` command (no model, no tokens)
@@ -68,12 +69,13 @@ Anytime:
 |---|---|
 | `mbuild plan [show\|next\|unsliced]` | slices in `.mbuild/plan.md`; the next slice; Rs in no slice |
 | `mbuild status` | `mkit status` plus next slice and unsliced Rs |
+| `mbuild auto check\|run\|status` | unattended slice loop, state in `.mbuild/auto.md`; only the driver runs `mkit done`, after verify and review pass |
 | `mbuild run new\|add\|show\|next\|done\|check\|pause\|approve` | multi-step run state in `.mbuild/run.md`; refuses a build step while the spec is broken, an action before approval, a step out of order |
 
 ## Why it is cheap
 - Skills and the CLIs do the mechanical work; the model emits 3-line ops, not file rewrites.
 - Skills read the index, then only the IDs they need. SPEC.md is never read whole.
-- No subagents by default; `research` and `review` are opt-in, one capped agent each. Triage runs on Haiku.
+- No subagents by default; `research` and `review` are opt-in, one capped agent each. `/mbuild:auto` is the exception: it runs a fresh `claude -p` build, review and fix per slice. Triage runs on Haiku.
 - Prompts are small (about 11 KB for mkit, 7 KB for mbuild). `scripts/budget.sh` enforces a budget per plugin.
 - Every skill ends with state on disk, so `/clear` is safe between steps.
 
@@ -86,3 +88,6 @@ bash test/run.sh          # mkit CLI tests
 bash mbuild/test/run.sh   # mbuild CLI tests (through the mkit seam)
 scripts/budget.sh         # prompt size budget, both plugins
 ```
+
+## Unattended build
+`/mbuild:auto` (after `/mbuild:build` has sliced the plan) runs `mbuild auto run`: per slice a fresh build session writes `verify.md`, a gate checks every acceptance bullet passed, an independent review session writes `review.json`, and a fixed policy triages it. Failed bullets and bugs get 2 fix passes; drift goes to the inbox (`--adjust`); a broken constraint or touched out-of-scope item stops the run. Only the driver runs `mkit done` and commits, so nothing is marked built without a passing verify and review. It stops with a push notification on `spec`, `acceptance`, `decision`, `budget` or `finished`, and rerunning resumes. Sessions use `--permission-mode acceptEdits`; add flags (allowed tools) with `$MBUILD_CLAUDE_ARGS`. Needs a git repo.
