@@ -10,6 +10,9 @@
                                  (no IDs: every R not done)
   mkit done ID...                mark Rs built and verified (same as the DONE op)
   mkit status                    progress: Rs done/todo/reopened, open Q, open inbox
+  mkit frame [show|set <stage>]  stage marker for /mkit:frame: brief, architecture, requirements,
+                                 confirm, done (done needs a clean `mkit check`)
+  mkit decisions                 one table of the decisions so far (the confirm step)
   mkit state [ID...]             one line per ID, for tools: R todo|reopened|built|removed,
                                  Q open|answered, other ok, unknown missing (no IDs: every R)
 
@@ -22,6 +25,7 @@ Op grammar: VERB ARGS | Title-or-text | Key: value | Key+: more
   TRACE | brief bullet | R1
   RESOLVE I3 | R4
   DONE R1 R2                     (R built and verified; sets Built: <date>)
+  ADD S | name | Owns: ... | Calls: ... | When down: ...   (service or layer; Rs name it: Layer: S1)
   LOG | text                     (changelog line only)
 
 Builders (the mbuild plugin, or any tool) cross this seam: brief, state, check, done, add.
@@ -31,11 +35,12 @@ import os
 import re
 import sys
 
-KINDS = [("C", "Constraints"), ("A", "Assumptions"), ("R", "Requirements"),
+KINDS = [("C", "Constraints"), ("A", "Assumptions"), ("S", "Services and layers"), ("R", "Requirements"),
          ("O", "Out of scope"), ("Q", "Open questions"), ("T", "Technology")]
 PREFIX_SECTION = dict(KINDS)
 SECTION_PREFIX = {v: k for k, v in KINDS}
 TRACE, LOG = "Deliverables trace", "Changelog"
+STAGES = ("brief", "architecture", "requirements", "confirm", "done")
 ID_RE = re.compile(r"^### ([A-Z])(\d+)\. (.*)$")
 FIELD_RE = re.compile(r"^- ([A-Za-z][\w ]*?):\s*(.*)$")
 SNIPPET_MARK = "<!-- mkit -->"
@@ -210,7 +215,8 @@ def find_root(create=False):
 def paths(root):
     m = os.path.join(root, ".mkit")
     return {"spec": os.path.join(root, "SPEC.md"), "dir": m, "inbox": os.path.join(m, "inbox.md"),
-            "index": os.path.join(m, "index.md"), "brief": os.path.join(m, "brief.md")}
+            "index": os.path.join(m, "index.md"), "brief": os.path.join(m, "brief.md"),
+            "frame": os.path.join(m, "frame.md")}
 
 
 def read(p, default=""):
@@ -300,6 +306,16 @@ def problems(doc, ready):
             errs.append("%s: Was %s does not exist" % (i.id, was))
         if ready and i.prefix == "Q" and not i.removed and not i.get("Answer"):
             errs.append("%s: unanswered question" % i.id)
+    live_s = {i.id for i in doc.items() if i.prefix == "S" and not i.removed}
+    if live_s:
+        for i in doc.items():
+            if i.prefix == "R" and not i.removed:
+                layers = re.findall(r"S\d+", i.get("Layer"))
+                if not layers:
+                    errs.append("%s: needs 'Layer: S<n>' (which service or layer owns it)" % i.id)
+                for l in layers:
+                    if l not in live_s:
+                        errs.append("%s: Layer %s is not an active service or layer" % (i.id, l))
     for bullet, cover in doc.trace:
         ids_ = [c.strip() for c in re.split(r"[,\s]+", cover) if c.strip()]
         if not ids_:
@@ -309,6 +325,18 @@ def problems(doc, ready):
                 errs.append("trace '%s': %s does not exist" % (bullet, c))
             elif ready and ids[c].removed:
                 errs.append("trace '%s': covered by removed %s" % (bullet, c))
+    if ready:
+        errs += coverage_errors(doc)
+    return errs
+
+
+def coverage_errors(doc):
+    errs = []
+    for sv in doc.items():
+        if sv.prefix == "S" and not sv.removed and not sv.get("None"):
+            if not any(i.prefix == "R" and not i.removed and sv.id in re.findall(r"S\d+", i.get("Layer"))
+                       for i in doc.items()):
+                errs.append("%s: no requirement names this layer (add one, or 'None: <why>')" % sv.id)
     return errs
 
 
@@ -533,6 +561,67 @@ def cmd_done(args):
     return cmd_apply(["DONE " + " ".join(args)])
 
 
+# ---------------------------------------------------------------- frame
+def cmd_frame(args):
+    """One-line stage marker so a staged frame survives /clear. The skill owns the rules."""
+    root = find_root()
+    p = paths(root)
+    cur = (re.search(r"^Stage:\s*(\w+)", read(p["frame"]), re.M) or [None, "brief"])[1]
+    if not args or args[0] == "show":
+        print("Stage %s (%s)" % (cur, " > ".join(STAGES)))
+        return 0
+    if args[0] != "set" or len(args) != 2 or args[1] not in STAGES:
+        raise Err("usage: mkit frame [show] | set %s" % "|".join(STAGES))
+    if args[1] == "done":
+        errs = problems(load(root), ready=True)
+        if errs:
+            raise Err("cannot finish framing:\n" + "\n".join(errs))
+    write(p["frame"], "Stage: %s\n" % args[1])
+    cmd_apply(["LOG | FRAME stage %s" % args[1]])
+    return 0
+
+
+def cmd_decisions(args):
+    doc = load(find_root())
+    live = [i for i in doc.items() if not i.removed]
+    rows = []
+    for i in live:
+        if i.prefix == "S":
+            rows.append(("Architecture", "%s %s" % (i.id, i.title),
+                         "owns: %s%s" % (i.get("Owns"), "; calls: " + i.get("Calls") if i.get("Calls") else "")))
+    for i in live:
+        if i.prefix == "T":
+            rows.append(("Technology", "%s %s" % (i.id, i.title), i.get("Choice") or i.get("Why")))
+    for i in live:
+        if i.prefix == "C":
+            rows.append(("Constraint", "%s %s" % (i.id, i.title), i.get("Real") or i.get("Kind")))
+    for i in live:
+        if i.prefix == "A":
+            rows.append(("Assumption", "%s %s" % (i.id, i.title), "test: " + i.get("Test")))
+    for sv in [i for i in live if i.prefix == "S"] + [None]:
+        rs = [i for i in live if i.prefix == "R" and
+              ((sv is None and not re.findall(r"S\d+", i.get("Layer"))) or
+               (sv is not None and sv.id in re.findall(r"S\d+", i.get("Layer"))))]
+        rs.sort(key=lambda i: (i.get("Priority"), i.num))
+        if rs:
+            rows.append(("Requirements", sv.id if sv else "(no layer)",
+                         "; ".join("%s [%s] %s" % (i.id, i.get("Priority"), i.title) for i in rs)))
+        elif sv is not None and sv.get("None"):
+            rows.append(("Requirements", sv.id, "none: " + sv.get("None")))
+    for i in live:
+        if i.prefix == "O":
+            rows.append(("Out of scope", "%s %s" % (i.id, i.title), i.get("Why")))
+    for i in live:
+        if i.prefix == "Q":
+            who = "delegated to me" if i.get("Decided by") == "delegated" else "you"
+            rows.append(("Decision" if i.get("Answer") else "OPEN QUESTION", i.title,
+                         "%s (%s)" % (i.get("Answer"), who) if i.get("Answer") else "unanswered"))
+    print("| Area | Item | Decision |\n|---|---|---|")
+    for a, b, c in rows:
+        print("| %s | %s | %s |" % (a, b.replace("|", "/"), (c or "").replace("|", "/")))
+    return 0
+
+
 def cmd_state(args):
     doc = load(find_root())
     items = {i.id: i for i in doc.items()}
@@ -593,9 +682,13 @@ def cmd_brief(args):
         xs = [i for i in live if i.prefix == pre]
         if xs:
             out += ["## " + head] + ["- %s %s" % (i.id, i.title) for i in xs] + [""]
+    svc = [i for i in live if i.prefix == "S"]
+    if svc:
+        out += ["## Services and layers"] + ["- %s %s: %s" % (i.id, i.title, i.get("Owns")) for i in svc] + [""]
     out += ["## Build"]
     for i in pick:
-        out.append("- **%s** [%s] %s" % (i.id, i.get("Priority"), i.title))
+        out.append("- **%s** [%s]%s %s" % (i.id, i.get("Priority"),
+                                           " (" + i.get("Layer") + ")" if i.get("Layer") else "", i.title))
         out += ["  - " + b for b in i.bullets("Acceptance")]
     out += ["", "## Do NOT build"]
     out += ["- %s %s" % (i.id, i.title) for i in live if i.prefix == "O"] or ["- (nothing listed)"]
@@ -628,7 +721,7 @@ When to use what:
 - Scope, a constraint or a tech choice is unclear: ask, or `/mkit:research`. Do not guess.
 - Design decisions (schema, API shape, service boundaries, libraries) are the user's: ask with a recommendation, then record it (`mkit apply "ANSWER Q<n> | text | Why: ..."`, By: delegated if they say "you decide").
 - Building from the spec (slices, multi-step runs with merges, migrations or waits, review) is the mbuild plugin: `/mbuild:build`, `/mbuild:run`, `/mbuild:review`.
-- User corrects you: `/mkit:learn`. Said "triage": `/mkit:triage`. New project or big feature with no SPEC.md: suggest `/mkit:frame`.
+- User corrects you: `/mkit:learn`. Said "triage": `/mkit:triage`. New project or big feature with no SPEC.md: suggest `/mkit:frame` (staged: brief, architecture, requirements, confirm; it waits for the user's `ready` at each stage).
 - A requirement's acceptance changed after it was built: `mkit status` shows it `reopened`.
 - You assumed something the spec doesn't cover: `mkit add "assumed X" --adjust`.
 
@@ -660,7 +753,8 @@ def cmd_init(args):
 
 
 COMMANDS = {"init": cmd_init, "show": cmd_show, "add": cmd_add, "apply": cmd_apply,
-            "check": cmd_check, "brief": cmd_brief, "done": cmd_done, "status": cmd_status, "state": cmd_state}
+            "check": cmd_check, "brief": cmd_brief, "done": cmd_done, "status": cmd_status, "state": cmd_state,
+            "frame": cmd_frame, "decisions": cmd_decisions}
 
 
 def main(argv):

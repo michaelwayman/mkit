@@ -20,7 +20,7 @@ claude plugin install mbuild@mkit      # optional: only if you want the build si
 Dev loop: `claude --plugin-dir ~/Projects/mkit --plugin-dir ~/Projects/mkit/mbuild`, then `/reload-plugins`. Needs `python3` (stdlib only). Each plugin's `bin/` puts `mkit` / `mbuild` on PATH inside Claude Code; for a normal shell: `ln -s ~/Projects/mkit/bin/mkit /usr/local/bin/mkit` (same for `mbuild/bin/mbuild`).
 
 ## Flow
-1. `/mkit:frame [brief]`: interview, draft SPEC.md, `mkit check`, wait for `ready`.
+1. `/mkit:frame [brief]`: four stages, each ending with your `ready` before the next begins: **brief** (agree it at the highest level), **architecture** (services and layers, technology, constraints), **requirements** (each layer's Rs with acceptance), **confirm** (`mkit decisions` table of everything decided; say `ready` to make it the spec).
 2. `/mkit:challenge [premortem|redteam|devil|first|drop]`: attack the spec; accepted findings become changes.
 3. Build, one of two ways:
    - One piece, any builder: `/mkit:handoff` writes `.mkit/brief.md`; build from it in a fresh session.
@@ -55,6 +55,8 @@ Anytime:
 | `mkit check [--draft]` | the ready gate: no open Q, acceptance on every R, trace covered |
 | `mkit brief [IDs]` | builder handoff (no IDs: every R not done) |
 | `mkit done IDs` | mark Rs built and verified |
+| `mkit decisions` | one table of the decisions so far: brief, layers, technology, constraints, requirements by layer, out of scope, who decided each |
+| `mkit frame [show\|set <stage>]` | the staged-frame marker (so `/clear` is safe); `set done` needs a clean `mkit check` |
 | `mkit state [IDs]` | one machine-readable line per ID (todo, reopened, built, removed, open, answered, missing) |
 | `mkit status` | Rs done/todo/reopened, open Q, inbox |
 

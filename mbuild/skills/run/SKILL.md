@@ -13,7 +13,7 @@ Turn a high-level change into ordered steps and run them. State is in `.mbuild/r
 ## 1. Resume or start
 `mbuild run next`, always first. It prints one of:
 - `STEP n ...`: do it (step 4). `DONE`: step 6.
-- `WAIT n`: end the turn: "Waiting on <text>. Run `/mbuild:run` when it should be true." Spend nothing more.
+- `WAIT n`: end the turn: "Waiting on <text>. Run `/mbuild:run` when it should be true." 
 - `PAUSED Qn ...`: AskUserQuestion with the question, `mkit apply "ANSWER Qn | ..."`, then `mbuild run next`.
 - `BLOCKED`: the spec would break. Read the reasons; ask the user, fix through `/mkit:change` ops, then `mbuild run next`.
 - `PLANNING`: show `mbuild run show`, wait for approval, `mbuild run approve`.
@@ -39,6 +39,6 @@ Then `mbuild run done n`, and `mbuild run next` again.
 Request outside an R's acceptance, touches an O, failed acceptance bullet, anything the spec does not say: `mbuild run pause "<question>"`, ask, resume after the answer.
 
 ## 6. Finish
-`DONE` means every step is done and `mkit check` is clean (changelog line already written). Report in 3 lines.
+`DONE` means every step is done and `mkit check` is clean. Report in 3 lines.
 
 Unattended: a scheduled `claude -p "/mbuild:run"` is nearly free while a check fails.

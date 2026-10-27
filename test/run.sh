@@ -120,6 +120,26 @@ has state_all "$(m state)" "R3 built"; hasnt state_all_skips_removed "$(m state)
 out=$(m apply "ADD R | Another | Acceptance: x"); has apply_added "$out" "added R"
 m apply "LOG | something happened" >/dev/null; has log_op "$(cat SPEC.md)" "something happened"
 
+# services and layers, the stage marker and the decisions table
+cd "$T" && mkdir lp && cd lp && m init lay >/dev/null
+has frame_default "$(m frame)" "Stage brief"
+m apply "ADD Q | Outcome" >/dev/null; m apply "ANSWER Q1 | Online orders | By: you" >/dev/null
+m apply "ADD Q | Hosting?" >/dev/null; m apply "ANSWER Q2 | Cloudflare | By: delegated" >/dev/null
+m apply "ADD S | API | Owns: orders" "ADD S | Web | Owns: ui | Calls: S1" "ADD T | Postgres | Choice: pg | Why: relational" >/dev/null
+out=$(m apply "ADD R | Create order | Priority: P0 | Acceptance: POST returns 201"); has layer_needed "$out" "needs 'Layer: S<n>'"
+out=$(m apply "ADD R | Create order | Priority: P0 | Layer: S9 | Acceptance: x"); has layer_bad "$out" "Layer S9 is not an active"
+m apply "ADD R | Create order | Priority: P0 | Layer: S1 | Acceptance: POST returns 201" >/dev/null
+out=$(m check); has s_without_r "$out" "S2: no requirement names this layer"
+out=$(m frame set done); has done_blocked "$out" "cannot finish framing"
+out=$(m frame set bogus); has frame_usage "$out" "usage: mkit frame"
+m apply "ALTER S2 | None: later" >/dev/null; has check_ok "$(m check)" "ok "
+m frame set requirements >/dev/null; has stage_set "$(m frame)" "Stage requirements"
+out=$(m frame set done); eq frame_done "$(m frame)" "Stage done (brief > architecture > requirements > confirm > done)"
+d=$(m decisions); has dec_s "$d" "S1 API"; has dec_t "$d" "Postgres"; has dec_r "$d" "R1 [P0] Create order"
+has dec_none "$d" "none: later"; has dec_q "$d" "Cloudflare (delegated to me)"; has dec_q2 "$d" "Online orders (you)"
+b=$(m brief); has brief_svc "$b" "S1 API: orders"; has brief_layer "$b" "(S1) Create order"
+out=$(m apply "REMOVE S1 | merged"); has remove_s_blocked "$out" "Layer S1 is not an active"
+
 # outside a project
 cd "$T" && mkdir empty && cd empty
 out=$(m show); has "no project" "$out" "no SPEC.md"

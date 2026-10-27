@@ -53,7 +53,7 @@ The spec side (what and why) changes slowly, needs your judgement and works with
 - Any other builder can use the same calls. mbuild's own CLI reads the spec only through them, and its tests do the same.
 
 ### Skills: mkit (7) and mbuild (3)
-- `/mkit:frame [brief]`: intake, then interview. Covers intent, users, success criteria, constraints, scope, out-of-scope, assumptions. Drafts SPEC.md, puts every Q to the user in batches, then does a lint gate and a final review table and waits for `ready`.
+- `/mkit:frame [brief]`: four gated stages (brief, architecture, requirements, confirm); the user says `ready` before each next one, and the decisions table is confirmed before the spec is final. Services and layers are `S` items; every R names its `Layer`; `check` flags an S with no R unless `None:` gives the reason. The skill holds the rules; `mkit frame` only records the stage. Earlier text: intake, then interview. Covers intent, users, success criteria, constraints, scope, out-of-scope, assumptions. Drafts SPEC.md, puts every Q to the user in batches, then does a lint gate and a final review table and waits for `ready`.
 - `/mkit:challenge [mode]`: adversarial pass over an existing SPEC: pre-mortem, red team, devil's advocate, first principles, "what if constraint C3 were false". It outputs a short findings list, and the user accepts each as a change.
 - `/mkit:research [topic | ask "q"]`: opt-in fact-finding before a decision.
 - `/mkit:change "<change>"`: operations on R/O/A/C/T, a 5-line impact view, user confirms, the edit and changelog delta are applied, and the index is regenerated. No PRs or issue sync.
