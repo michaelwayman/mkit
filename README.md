@@ -24,6 +24,7 @@ Anytime:
 | File a bug, feature or tweak (0 tokens) | `mkit add "login 500s on empty email" --bug` (or `--feature`, `--adjust`) |
 | Process the inbox in one pass | `/mkit:triage` |
 | Add, drop, alter, move in or out of scope; answer a question | `/mkit:change "<change>"` |
+| Multi-step change with merges, migrations, waits (pauses to ask; resumable) | `/mkit:run "<change>"`, `/mkit:run` to resume, `/mkit:run triage` |
 | Get facts before a decision | `/mkit:research <topic>` / `ask "<question>"` |
 | Turn a correction into a rule | `/mkit:learn "<what went wrong>"` |
 
@@ -37,6 +38,7 @@ Anytime:
 | `mkit check [--draft]` | the ready gate: no open Q, acceptance on every R, trace covered |
 | `mkit brief [IDs]` | builder handoff (no IDs: next slice, else every R not done) |
 | `mkit done IDs` | mark Rs built and verified |
+| `mkit run new\|add\|show\|next\|done\|check\|pause\|approve` | multi-step run state in `.mkit/run.md`; refuses a build step while the spec is broken, an action before approval, a step out of order |
 | `mkit status` | Rs done/todo, open Q, inbox, next slice |
 
 `mkit --help` lists the op grammar.
@@ -47,6 +49,9 @@ Anytime:
 - No subagents by default; research is opt-in and capped. Triage runs on Haiku.
 - Plugin prompts are small (about 10 KB). `scripts/budget.sh` enforces a budget.
 - Every skill ends with state on disk, so `/clear` is safe between steps.
+
+## Multi-step runs
+`/mkit:run "<change>"` clarifies against the spec first, then plans ordered steps: `spec`, `build`, `action` (a literal command you approve once), `wait` (a literal check, exit 0 = true). It runs until a spec question, a failure, or a wait; then it parks. Resume with `/mkit:run`, or schedule `claude -p "/mkit:run"`: while the check fails it costs almost nothing. `.mkit/run.md` is local state; consider gitignoring it.
 
 ## Develop
 ```bash

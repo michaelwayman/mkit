@@ -46,13 +46,14 @@ SPEC.md              single source of truth; stable IDs, never renumbered
 ```
 SPEC.md sections: Constraints `C`, Assumptions `A`, Requirements `R` (priority P0-P2, acceptance bullets), Out of scope `O` (with why and revisit trigger), Open questions `Q`, Decisions (Question, Answer, Decided by you or delegated, Source), Technology `T`, Deliverables trace, Changelog. Milestones, time box, grade, estimates and services/contracts are dropped from the core. Time box becomes one optional constraint row.
 
-### Skills (8)
+### Skills (9)
 - `/mkit:frame [brief]`: intake, then interview. Covers intent, users, success criteria, constraints, scope, out-of-scope, assumptions. Drafts SPEC.md, puts every Q to the user in batches, then does a lint gate and a final review table and waits for `ready`.
 - `/mkit:challenge [mode]`: adversarial pass over an existing SPEC: pre-mortem, red team, devil's advocate, first principles, "what if constraint C3 were false". It outputs a short findings list, and the user accepts each as a change.
 - `/mkit:research [topic | ask "q"]`: opt-in fact-finding before a decision.
 - `/mkit:change "<change>"`: operations on R/O/A/C/T, a 5-line impact view, user confirms, the edit and changelog delta are applied, and the index is regenerated. No PRs or issue sync.
 - `/mkit:triage`: one batched pass over `.mkit/inbox.md`. Each line is classified as a bug or small fix to an existing R, an adjustment, or a new feature or scope change (which goes to `change`). Proposes edits and resolves the lines.
 - `/mkit:build [R…]`: the driver for a whole project. Slices the Rs once into `.mkit/plan.md`, then per fresh session: brief the next slice, build, verify every acceptance bullet, `mkit done`, commit, checkpoint. Spec changes only through `change`/`triage`.
+- `/mkit:run ["<change>" | triage]`: orchestrates a multi-step change. Clarifies against the spec, plans `spec`/`build`/`action`/`wait` steps into `.mkit/run.md`, runs until a spec question, failure or wait, then parks and resumes. It is a skill, not an agent: a subagent cannot ask questions or park mid-run. `mkit run` enforces the guards (no build step while `check` fails or an R is removed/moved to O; no unapproved action; strict order).
 - `/mkit:handoff [R…]`: runs `mkit brief` and adds the builder's acceptance checks.
 - `/mkit:learn "<correction>"`: appends to the project's learned rules or proposes a kit patch.
 

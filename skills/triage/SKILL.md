@@ -22,3 +22,5 @@ Show one table: I# · Text · Class · Proposed op. Ask once: apply all / edit. 
 Apply with one `mkit apply`, ending with `RESOLVE I<n> | <R or note>` per item. Features stay open unless the user routes them to change now.
 
 Then list the open bugs and adjustments as the builder's to-do (IDs and one line each). Do not build.
+
+A batch that needs several ordered steps (merges, migrations, waits): `/mkit:run triage`.
