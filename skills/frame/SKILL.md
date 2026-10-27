@@ -29,6 +29,7 @@ Emit ops, not prose. `mkit apply` with one op per line:
 `ADD O | title | Why: ... | Revisit: ...`  `ADD C|A|T ...`  `ADD Q | open question`
 `ANSWER Q1 | text | By: you` (By: delegated for "You decide", applying your recommendation)
 `TRACE | <the brief's bullet, quoted> | R1` for every deliverable bullet in the brief, nested ones too. One row per bullet, never per section; cover it with an R or an O.
+A user-facing UI R also gets `Visual:` acceptance bullets, checkable on a screenshot at 375px and 1280px (layout per width, states: loading, empty, error, focus). Services and boundaries are `T` items: `ADD T | <service> | Owns: ... | Calls: ... | When down: ...`.
 Acceptance bullets must be observable: something a command, a request or a screenshot can show. "Documented" or "works well" is not acceptance.
 If apply rejects, fix the op; nothing was written.
 

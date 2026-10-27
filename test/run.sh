@@ -78,6 +78,14 @@ has brief4 "$b" "Auth0"; has brief5 "$b" "Must run offline"; hasnt brief6 "$b" "
 b=$(m brief R3); hasnt brief_slice "$b" "After remove"
 [ -f .mkit/brief.md ] && ok || bad "brief file"
 
+# ANSWER with Why shows in brief; T items hold services
+m apply "ADD Q | Verify tokens locally?" "ADD T | auth service | Owns: users, roles | Calls: none | When down: main app keeps serving reads" >/dev/null
+m apply "ANSWER Q2 | yes | Why: survives auth outage | By: delegated" >/dev/null
+has why "$(m show Q2)" "Why: survives auth outage"; has why2 "$(m show Q2)" "Decided by: delegated"
+has why_brief "$(m brief)" "yes (survives auth outage)"
+has svc "$(m show T1)" "When down: main app"
+has snippet_trigger "$(cat CLAUDE.md)" "When to use what"
+
 # round trip: no-op apply leaves content stable
 a=$(cat SPEC.md); m apply "ALTER R3 | Title: Export data" >/dev/null; diff <(echo "$a" | grep -v mkit) <(grep -v mkit SPEC.md) >/dev/null && ok || bad "roundtrip stable (modulo changelog)"
 

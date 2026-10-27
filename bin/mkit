@@ -437,12 +437,14 @@ def apply_op(doc, rows, op):
     elif verb == "ANSWER":
         it = doc.find(rest[0])
         if it.prefix != "Q" or len(segs) < 2:
-            raise Err("ANSWER Q<n> | text [| By: you|delegated]")
+            raise Err("ANSWER Q<n> | text [| Why: ...] [| By: you|delegated]")
         it.set("Answer", segs[1])
         by = "you"
         for k, _, v in split_fields(segs[2:]):
             if k.lower() == "by":
                 by = v
+            elif k.lower() == "why":
+                it.set("Why", v)
         it.set("Decided by", by)
         log(doc, "ANSWER %s" % it.id)
     elif verb == "TRACE":
@@ -518,7 +520,8 @@ def cmd_brief(args):
     out += ["- %s %s" % (i.id, i.title) for i in live if i.prefix == "O"] or ["- (nothing listed)"]
     dec = [i for i in live if i.prefix == "Q" and i.get("Answer")]
     if dec:
-        out += ["", "## Decided"] + ["- %s -> %s" % (i.title, i.get("Answer")) for i in dec]
+        out += ["", "## Decided"] + ["- %s -> %s%s" % (i.title, i.get("Answer"),
+                                                       " (" + i.get("Why") + ")" if i.get("Why") else "") for i in dec]
     un = [i for i in live if i.prefix == "A" and i.get("Status", "unvalidated") == "unvalidated"]
     if un:
         out += ["", "## Unvalidated assumptions (flag if they break)"] + ["- %s %s" % (i.id, i.title) for i in un]
@@ -535,12 +538,18 @@ def plugin_root():
 
 SNIPPET = """%s
 ## mkit
-Requirements live in SPEC.md (stable IDs R/O/A/C/Q/T). Never read it whole:
-- `mkit show` = index; `mkit show R3 O1` = just those items
-- change it only via `mkit apply` (or `/mkit:change`), never by hand-editing
-- file a bug/feature/tweak in one line: `mkit add "..." --bug|--feature|--adjust`
-- build from `mkit brief`; anything not in it is out of scope: ask first
-Skills: /mkit:frame /mkit:challenge /mkit:change /mkit:triage /mkit:research /mkit:handoff /mkit:learn
+SPEC.md holds scope, constraints and decisions (IDs: R requirement, O out of scope, A assumption, C constraint, Q question, T technology). Never read it whole: `mkit show` = index, `mkit show R3 O1` = just those items.
+
+When to use what:
+- Before building anything non-trivial: `mkit brief R<n>`; build only what it lists.
+- User reports a bug, idea or tweak: `mkit add "<one line>" --bug|--feature|--adjust`, then carry on. Do not edit SPEC.md.
+- A request touches an O item or goes beyond an R's acceptance: stop and ask; suggest `/mkit:change`. Do not build it.
+- Scope, a constraint or a tech choice is unclear: ask, or `/mkit:research`. Do not guess.
+- Design decisions (schema, API shape, service boundaries, libraries) are the user's: ask with a recommendation, then record it (`mkit apply "ANSWER Q<n> | text | Why: ..."`, By: delegated if they say "you decide").
+- User corrects you: `/mkit:learn`. Said "triage": `/mkit:triage`. New project or big feature with no SPEC.md: suggest `/mkit:frame`.
+- You assumed something the spec doesn't cover: `mkit add "assumed X" --adjust`.
+
+Change SPEC.md only through `mkit apply` or `/mkit:change`, never by hand.
 %s
 """
 
