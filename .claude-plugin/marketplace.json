@@ -1,0 +1,8 @@
+{
+  "name": "mkit",
+  "description": "Local marketplace for the mkit plugin",
+  "owner": { "name": "Michael Wayman" },
+  "plugins": [
+    { "name": "mkit", "source": "./", "description": "Requirements-first spec kit: frame, challenge, change, triage, handoff." }
+  ]
+}

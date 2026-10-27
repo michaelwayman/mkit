@@ -1,0 +1,586 @@
+#!/usr/bin/env python3
+"""mkit: one deep module over SPEC.md and the inbox. Zero model tokens.
+
+  mkit init [name]               scaffold SPEC.md, .mkit/, CLAUDE.md snippet
+  mkit show [ID... | --index | --inbox]
+  mkit add "<text>" [--bug|--feature|--adjust]
+  mkit apply [op ...]            ops as args, or one per line on stdin
+  mkit check [--draft]           full gate by default; --draft = structure only
+  mkit brief [ID...]             builder handoff, written to .mkit/brief.md
+
+Op grammar: VERB ARGS | Title-or-text | Key: value | Key+: more
+  ADD R | Title | Priority: P0 | Acceptance: one; two
+  ALTER R3 | Title: new | Acceptance+: extra
+  REMOVE R3 | reason
+  MOVE R3 O | Why: reason          (R->O or O->R; ids cross-referenced)
+  ANSWER Q2 | text | By: you|delegated
+  TRACE | brief bullet | R1
+  RESOLVE I3 | R4
+"""
+import datetime
+import os
+import re
+import sys
+
+KINDS = [("C", "Constraints"), ("A", "Assumptions"), ("R", "Requirements"),
+         ("O", "Out of scope"), ("Q", "Open questions"), ("T", "Technology")]
+PREFIX_SECTION = dict(KINDS)
+SECTION_PREFIX = {v: k for k, v in KINDS}
+TRACE, LOG = "Deliverables trace", "Changelog"
+ID_RE = re.compile(r"^### ([A-Z])(\d+)\. (.*)$")
+FIELD_RE = re.compile(r"^- ([A-Za-z][\w ]*?):\s*(.*)$")
+SNIPPET_MARK = "<!-- mkit -->"
+
+
+class Err(Exception):
+    pass
+
+
+def today():
+    return datetime.date.today().isoformat()
+
+
+# ---------------------------------------------------------------- model
+class Item:
+    def __init__(self, prefix, num, title):
+        self.prefix, self.num, self.title = prefix, num, title
+        self.fields = []  # [key, value, [bullets]]
+        self.notes = []
+
+    @property
+    def id(self):
+        return "%s%d" % (self.prefix, self.num)
+
+    def get(self, key, default=""):
+        for f in self.fields:
+            if f[0].lower() == key.lower():
+                return f[1]
+        return default
+
+    def bullets(self, key):
+        for f in self.fields:
+            if f[0].lower() == key.lower():
+                return f[2]
+        return []
+
+    def set(self, key, value="", bullets=None, append=False):
+        for f in self.fields:
+            if f[0].lower() == key.lower():
+                if bullets is None:
+                    f[1] = value
+                elif append:
+                    f[2].extend(bullets)
+                else:
+                    f[2] = list(bullets)
+                return
+        self.fields.append([key, value, list(bullets or [])])
+
+    @property
+    def removed(self):
+        return self.get("Status").startswith("removed")
+
+    def render(self):
+        out = ["### %s. %s" % (self.id, self.title)]
+        for k, v, b in self.fields:
+            out.append("- %s:%s" % (k, " " + v if v else ""))
+            out.extend("  - " + x for x in b)
+        out.extend(self.notes)
+        return out
+
+
+class Doc:
+    def __init__(self):
+        self.pre = []
+        self.sections = []  # dicts: name, intro, items, raw
+        self.trace = []  # [bullet, cover]
+        self.log = []  # [date, change, by]
+
+    def items(self):
+        return [i for s in self.sections for i in s["items"]]
+
+    def find(self, id_):
+        for i in self.items():
+            if i.id == id_:
+                return i
+        raise Err("no such id: %s" % id_)
+
+    def section(self, prefix):
+        name = PREFIX_SECTION[prefix]
+        for s in self.sections:
+            if s["name"] == name:
+                return s
+        s = {"name": name, "intro": [], "items": [], "raw": []}
+        self.sections.append(s)
+        return s
+
+    def next_num(self, prefix):
+        return max([i.num for i in self.items() if i.prefix == prefix] or [0]) + 1
+
+
+def parse(text):
+    doc = Doc()
+    cur = None
+    for line in text.split("\n"):
+        if line.startswith("## "):
+            cur = {"name": line[3:].strip(), "intro": [], "items": [], "raw": []}
+            doc.sections.append(cur)
+        elif cur is None:
+            doc.pre.append(line)
+        elif cur["name"] in (TRACE, LOG):
+            cur["raw"].append(line)
+        else:
+            m = ID_RE.match(line)
+            if m:
+                cur["items"].append(Item(m.group(1), int(m.group(2)), m.group(3)))
+            elif not cur["items"]:
+                cur["intro"].append(line)
+            else:
+                it = cur["items"][-1]
+                fm = FIELD_RE.match(line)
+                if fm:
+                    it.fields.append([fm.group(1), fm.group(2).strip(), []])
+                elif line.startswith("  - ") and it.fields:
+                    it.fields[-1][2].append(line[4:])
+                elif line.strip():
+                    it.notes.append(line)
+    for s in list(doc.sections):
+        rows = [l for l in s["raw"] if l.startswith("|")][2:]
+        cells = [[c.strip() for c in r.strip().strip("|").split("|")] for r in rows]
+        if s["name"] == TRACE:
+            doc.trace = [c[:2] + [""] * (2 - len(c)) for c in cells if len(c) >= 1 and c[0] and not c[0].startswith("{{")]
+        if s["name"] == LOG:
+            doc.log = [c[:3] + [""] * (3 - len(c)) for c in cells if c and c[0] and not c[0].startswith("{{")]
+    return doc
+
+
+def render(doc):
+    out = list(doc.pre)
+    have = {s["name"] for s in doc.sections}
+    for _, name in KINDS + [(None, TRACE), (None, LOG)]:
+        if name not in have:
+            doc.sections.append({"name": name, "intro": [], "items": [], "raw": []})
+    order = [n for _, n in KINDS] + [TRACE, LOG]
+    secs = sorted(doc.sections, key=lambda s: order.index(s["name"]) if s["name"] in order else 99)
+    for s in secs:
+        out.append("## " + s["name"])
+        if s["name"] == TRACE:
+            out += ["", "| Brief bullet | Covered by |", "|---|---|"]
+            out += ["| %s | %s |" % tuple(r) for r in doc.trace]
+            out.append("")
+        elif s["name"] == LOG:
+            out += ["", "| Date | Change | By |", "|---|---|---|"]
+            out += ["| %s | %s | %s |" % tuple(r) for r in doc.log]
+            out.append("")
+        else:
+            intro = list(s["intro"])
+            out += intro if intro else [""]
+            if intro and intro[-1].strip():
+                out.append("")
+            for it in s["items"]:
+                out += it.render() + [""]
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out) + "\n"
+
+
+# ---------------------------------------------------------------- files
+def find_root(create=False):
+    d = os.getcwd()
+    while True:
+        if os.path.isdir(os.path.join(d, ".mkit")) or os.path.exists(os.path.join(d, "SPEC.md")):
+            return d
+        p = os.path.dirname(d)
+        if p == d:
+            break
+        d = p
+    if create:
+        return os.getcwd()
+    raise Err("no SPEC.md or .mkit/ found; run `mkit init`")
+
+
+def paths(root):
+    m = os.path.join(root, ".mkit")
+    return {"spec": os.path.join(root, "SPEC.md"), "dir": m, "inbox": os.path.join(m, "inbox.md"),
+            "index": os.path.join(m, "index.md"), "brief": os.path.join(m, "brief.md")}
+
+
+def read(p, default=""):
+    try:
+        with open(p) as f:
+            return f.read()
+    except IOError:
+        return default
+
+
+def write(p, text):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, p)
+
+
+def load(root):
+    p = paths(root)
+    if not os.path.exists(p["spec"]):
+        raise Err("SPEC.md not found; run `mkit init`")
+    return parse(read(p["spec"]))
+
+
+# ---------------------------------------------------------------- inbox
+INBOX_RE = re.compile(r"^- \[( |x)\] I(\d+) (\d{4}-\d\d-\d\d) (\w+): (.*?)(?: -> (\S+))?$")
+
+
+def inbox_parse(text):
+    rows = []
+    for l in text.split("\n"):
+        m = INBOX_RE.match(l)
+        if m:
+            rows.append({"done": m.group(1) == "x", "n": int(m.group(2)), "date": m.group(3),
+                         "kind": m.group(4), "text": m.group(5), "to": m.group(6) or ""})
+    return rows
+
+
+def inbox_render(rows):
+    out = ["# Inbox", ""]
+    for r in rows:
+        out.append("- [%s] I%d %s %s: %s%s" % ("x" if r["done"] else " ", r["n"], r["date"], r["kind"],
+                                              r["text"], " -> " + r["to"] if r["to"] else ""))
+    return "\n".join(out) + "\n"
+
+
+def cmd_add(args):
+    kind, words = "untyped", []
+    for a in args:
+        if a in ("--bug", "--feature", "--adjust"):
+            kind = a[2:]
+        else:
+            words.append(a)
+    text = " ".join(" ".join(words).split())
+    if not text:
+        raise Err('usage: mkit add "<text>" [--bug|--feature|--adjust]')
+    root = find_root(create=True)
+    p = paths(root)
+    rows = inbox_parse(read(p["inbox"]))
+    for r in rows:
+        if not r["done"] and r["text"] == text:
+            print("I%d (already open)" % r["n"])
+            return 0
+    n = max([r["n"] for r in rows] or [0]) + 1
+    rows.append({"done": False, "n": n, "date": today(), "kind": kind, "text": text, "to": ""})
+    write(p["inbox"], inbox_render(rows))
+    print("I%d" % n)
+    return 0
+
+
+# ---------------------------------------------------------------- check
+def problems(doc, ready):
+    errs, seen = [], set()
+    ids = {i.id: i for i in doc.items()}
+    for i in doc.items():
+        if i.id in seen:
+            errs.append("%s: duplicate id" % i.id)
+        seen.add(i.id)
+        if i.prefix == "R" and not i.removed:
+            if not i.bullets("Acceptance"):
+                errs.append("%s: no acceptance bullets" % i.id)
+            if i.get("Priority") not in ("P0", "P1", "P2"):
+                errs.append("%s: Priority must be P0, P1 or P2" % i.id)
+        was = i.get("Was")
+        if was and was not in ids:
+            errs.append("%s: Was %s does not exist" % (i.id, was))
+        if ready and i.prefix == "Q" and not i.removed and not i.get("Answer"):
+            errs.append("%s: unanswered question" % i.id)
+    for bullet, cover in doc.trace:
+        ids_ = [c.strip() for c in re.split(r"[,\s]+", cover) if c.strip()]
+        if not ids_:
+            errs.append("trace '%s': no cover" % bullet)
+        for c in ids_:
+            if c not in ids:
+                errs.append("trace '%s': %s does not exist" % (bullet, c))
+            elif ready and ids[c].removed:
+                errs.append("trace '%s': covered by removed %s" % (bullet, c))
+    return errs
+
+
+def cmd_check(args):
+    doc = load(find_root())
+    errs = problems(doc, ready="--draft" not in args)
+    if errs:
+        print("\n".join(errs))
+        return 1
+    print("ok " + counts(doc))
+    return 0
+
+
+def counts(doc):
+    return " ".join("%s:%d" % (k, len([i for i in doc.items() if i.prefix == k and not i.removed]))
+                    for k, _ in KINDS)
+
+
+# ---------------------------------------------------------------- show
+def index_line(i):
+    if i.removed:
+        tag = "removed"
+    elif i.prefix == "R":
+        tag = i.get("Priority", "P1")
+    elif i.prefix == "Q":
+        tag = "answered" if i.get("Answer") else "open"
+    elif i.prefix == "A":
+        tag = i.get("Status", "unvalidated")
+    elif i.prefix == "C":
+        tag = i.get("Kind", "constraint")
+    else:
+        tag = i.get("Status", "active")
+    return "%s [%s] %s" % (i.id, tag, i.title)
+
+
+def index_text(doc):
+    return "\n".join(index_line(i) for i in doc.items()) + "\n"
+
+
+def cmd_show(args):
+    root = find_root()
+    p = paths(root)
+    if "--inbox" in args:
+        rows = [r for r in inbox_parse(read(p["inbox"])) if not r["done"]]
+        for r in rows:
+            print("I%d %s %s: %s" % (r["n"], r["date"], r["kind"], r["text"]))
+        if not rows:
+            print("(inbox empty)")
+        return 0
+    doc = load(root)
+    if not args or "--index" in args:
+        sys.stdout.write(index_text(doc))
+        return 0
+    out = []
+    for a in args:
+        out += doc.find(a).render() + [""]
+    print("\n".join(out).rstrip())
+    return 0
+
+
+# ---------------------------------------------------------------- apply
+def split_fields(segs):
+    out = []
+    for s in segs:
+        m = re.match(r"^([A-Za-z][\w ]*?)(\+?):\s*(.*)$", s)
+        if not m:
+            raise Err("expected 'Key: value', got '%s'" % s)
+        out.append((m.group(1), m.group(2) == "+", m.group(3)))
+    return out
+
+
+def set_field(item, key, plus, val):
+    if key.lower() == "title":
+        item.title = val
+    elif key.lower() == "acceptance":
+        item.set(key, "", [b.strip() for b in val.split(";") if b.strip()], append=plus)
+    else:
+        item.set(key, val)
+
+
+def log(doc, text):
+    doc.log.append([today(), text.replace("|", "/"), "mkit"])
+
+
+def new_item(doc, prefix, title, fields):
+    if prefix not in PREFIX_SECTION:
+        raise Err("unknown kind: %s (use one of %s)" % (prefix, "".join(PREFIX_SECTION)))
+    it = Item(prefix, doc.next_num(prefix), title)
+    if prefix == "R":
+        it.set("Priority", "P1")
+        it.set("Status", "active")
+        it.set("Acceptance", "", [])
+    for k, plus, v in fields:
+        set_field(it, k, plus, v)
+    doc.section(prefix)["items"].append(it)
+    return it
+
+
+def apply_op(doc, rows, op):
+    segs = [s.strip() for s in re.split(r"\s+\|\s+", op.strip())]
+    head = segs[0].split(None, 2)
+    verb, rest = head[0].upper(), head[1:]
+    if verb == "ADD":
+        if len(rest) != 1 or len(segs) < 2:
+            raise Err("ADD <kind> | Title [| Key: value]")
+        it = new_item(doc, rest[0].upper(), segs[1], split_fields(segs[2:]))
+        log(doc, "ADD %s: %s" % (it.id, it.title))
+    elif verb == "ALTER":
+        it = doc.find(rest[0])
+        for k, plus, v in split_fields(segs[1:]):
+            set_field(it, k, plus, v)
+        log(doc, "ALTER %s" % it.id)
+    elif verb == "REMOVE":
+        it = doc.find(rest[0])
+        if it.removed:
+            raise Err("%s already removed" % it.id)
+        reason = segs[1] if len(segs) > 1 else "no reason given"
+        it.set("Status", "removed (%s, %s)" % (today(), reason))
+        log(doc, "REMOVE %s: %s" % (it.id, reason))
+    elif verb == "MOVE":
+        if len(rest) != 2 or {rest[0][0], rest[1].upper()} != {"R", "O"}:
+            raise Err("MOVE R<n> O  or  MOVE O<n> R")
+        old = doc.find(rest[0])
+        if old.removed:
+            raise Err("%s already removed" % old.id)
+        extra = split_fields(segs[1:])
+        new = new_item(doc, rest[1].upper(), old.title, extra)
+        new.set("Was", old.id)
+        if new.prefix == "O" and not new.get("Why"):
+            new.set("Why", "moved out of scope")
+        old.set("Status", "removed (%s, now %s)" % (today(), new.id))
+        for r in doc.trace:
+            r[1] = re.sub(r"\b%s\b" % old.id, new.id, r[1])
+        log(doc, "MOVE %s -> %s" % (old.id, new.id))
+    elif verb == "ANSWER":
+        it = doc.find(rest[0])
+        if it.prefix != "Q" or len(segs) < 2:
+            raise Err("ANSWER Q<n> | text [| By: you|delegated]")
+        it.set("Answer", segs[1])
+        by = "you"
+        for k, _, v in split_fields(segs[2:]):
+            if k.lower() == "by":
+                by = v
+        it.set("Decided by", by)
+        log(doc, "ANSWER %s" % it.id)
+    elif verb == "TRACE":
+        if len(segs) != 3:
+            raise Err("TRACE | brief bullet | R1")
+        for r in doc.trace:
+            if r[0] == segs[1]:
+                r[1] = segs[2]
+                break
+        else:
+            doc.trace.append([segs[1], segs[2]])
+        log(doc, "TRACE %s" % segs[2])
+    elif verb == "RESOLVE":
+        m = re.match(r"^I(\d+)$", rest[0] if rest else "")
+        row = next((r for r in rows if m and r["n"] == int(m.group(1))), None)
+        if not row:
+            raise Err("no such inbox item: %s" % (rest[0] if rest else ""))
+        row["done"] = True
+        row["to"] = segs[1] if len(segs) > 1 else ""
+    else:
+        raise Err("unknown op: %s" % verb)
+
+
+def cmd_apply(args):
+    ops = args or [l for l in sys.stdin.read().split("\n") if l.strip() and not l.lstrip().startswith("#")]
+    if not ops:
+        raise Err("no ops")
+    root = find_root()
+    p = paths(root)
+    doc = load(root)
+    rows = inbox_parse(read(p["inbox"]))
+    for n, op in enumerate(ops, 1):
+        try:
+            apply_op(doc, rows, op)
+        except Err as e:
+            raise Err("op %d (%s): %s -- nothing written" % (n, op[:40], e))
+        except IndexError:
+            raise Err("op %d (%s): missing argument -- nothing written" % (n, op[:40]))
+    errs = problems(doc, ready=False)
+    if errs:
+        raise Err("invalid result, nothing written:\n" + "\n".join(errs))
+    write(p["spec"], render(doc))
+    write(p["index"], index_text(doc))
+    if os.path.exists(p["inbox"]) or rows:
+        write(p["inbox"], inbox_render(rows))
+    print("applied %d op(s); %s" % (len(ops), counts(doc)))
+    return 0
+
+
+# ---------------------------------------------------------------- brief
+def cmd_brief(args):
+    root = find_root()
+    p = paths(root)
+    doc = load(root)
+    errs = problems(doc, ready=True)
+    live = [i for i in doc.items() if not i.removed]
+    pick = [i for i in live if i.prefix == "R" and (not args or i.id in args)]
+    pick.sort(key=lambda i: (i.get("Priority"), i.num))
+    out = ["# Build brief", "",
+           "Build only what is listed. Out-of-scope items are decisions, not gaps. "
+           "Anything else is a spec change: stop and ask. Detail: `mkit show <ID>`.", ""]
+    if errs:
+        out += ["> Spec is not ready (`mkit check`): " + "; ".join(errs[:3]), ""]
+    for pre, head in (("C", "Constraints"),):
+        xs = [i for i in live if i.prefix == pre]
+        if xs:
+            out += ["## " + head] + ["- %s %s" % (i.id, i.title) for i in xs] + [""]
+    out += ["## Build"]
+    for i in pick:
+        out.append("- **%s** [%s] %s" % (i.id, i.get("Priority"), i.title))
+        out += ["  - " + b for b in i.bullets("Acceptance")]
+    out += ["", "## Do NOT build"]
+    out += ["- %s %s" % (i.id, i.title) for i in live if i.prefix == "O"] or ["- (nothing listed)"]
+    dec = [i for i in live if i.prefix == "Q" and i.get("Answer")]
+    if dec:
+        out += ["", "## Decided"] + ["- %s -> %s" % (i.title, i.get("Answer")) for i in dec]
+    un = [i for i in live if i.prefix == "A" and i.get("Status", "unvalidated") == "unvalidated"]
+    if un:
+        out += ["", "## Unvalidated assumptions (flag if they break)"] + ["- %s %s" % (i.id, i.title) for i in un]
+    text = "\n".join(out) + "\n"
+    write(p["brief"], text)
+    sys.stdout.write(text)
+    return 0
+
+
+# ---------------------------------------------------------------- init
+def plugin_root():
+    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+SNIPPET = """%s
+## mkit
+Requirements live in SPEC.md (stable IDs R/O/A/C/Q/T). Never read it whole:
+- `mkit show` = index; `mkit show R3 O1` = just those items
+- change it only via `mkit apply` (or `/mkit:change`), never by hand-editing
+- file a bug/feature/tweak in one line: `mkit add "..." --bug|--feature|--adjust`
+- build from `mkit brief`; anything not in it is out of scope: ask first
+Skills: /mkit:frame /mkit:challenge /mkit:change /mkit:triage /mkit:research /mkit:handoff /mkit:learn
+%s
+"""
+
+
+def cmd_init(args):
+    root = os.getcwd()
+    p = paths(root)
+    name = " ".join(args) or os.path.basename(root)
+    if os.path.exists(p["spec"]):
+        raise Err("SPEC.md already exists; use /mkit:change")
+    tmpl = read(os.path.join(plugin_root(), "templates", "SPEC.md.tmpl"))
+    if not tmpl:
+        raise Err("template missing: templates/SPEC.md.tmpl")
+    doc = parse(tmpl.replace("{{PROJECT_NAME}}", name).replace("{{DATE}}", today()))
+    log(doc, "Initial spec")
+    write(p["spec"], render(doc))
+    write(p["index"], index_text(doc))
+    write(p["inbox"], inbox_render([]))
+    cm = os.path.join(root, "CLAUDE.md")
+    cur = read(cm)
+    if SNIPPET_MARK not in cur:
+        write(cm, (cur.rstrip() + "\n\n" if cur.strip() else "") + SNIPPET % (SNIPPET_MARK, SNIPPET_MARK))
+    print("initialised %s: SPEC.md, .mkit/, CLAUDE.md snippet" % name)
+    return 0
+
+
+COMMANDS = {"init": cmd_init, "show": cmd_show, "add": cmd_add, "apply": cmd_apply,
+            "check": cmd_check, "brief": cmd_brief}
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help") or argv[1] not in COMMANDS:
+        sys.stdout.write(__doc__)
+        return 0 if len(argv) < 2 or argv[1] in ("-h", "--help") else 2
+    try:
+        return COMMANDS[argv[1]](argv[2:])
+    except Err as e:
+        sys.stderr.write("mkit: %s\n" % e)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

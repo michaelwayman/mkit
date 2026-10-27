@@ -1,0 +1,7 @@
+{
+  "name": "mkit",
+  "version": "0.1.0",
+  "description": "Requirements first: gather, challenge and track scope, assumptions and constraints in SPEC.md, with a one-line backlog and a tiny builder brief. Built to spend few tokens.",
+  "author": { "name": "Michael Wayman" },
+  "keywords": ["requirements", "spec", "scope", "planning"]
+}
