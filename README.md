@@ -48,7 +48,7 @@ Anytime:
 ## The `mkit` command (no model, no tokens)
 | Command | Does |
 |---|---|
-| `mkit init [name]` | SPEC.md, `.mkit/`, a short CLAUDE.md snippet |
+| `mkit init [name]` | SPEC.md, `.mkit/`, a short CLAUDE.md snippet. `--refresh` rewrites just that marked block in an existing project (after upgrading mkit) |
 | `mkit show [IDs \| --index \| --inbox]` | the index, just those items, or the open inbox |
 | `mkit add "<text>" [--bug\|--feature\|--adjust]` | one line into `.mkit/inbox.md` |
 | `mkit apply [op ...]` | change SPEC.md by small ops; validated, atomic, stable IDs, changelog |
@@ -57,6 +57,7 @@ Anytime:
 | `mkit done IDs` | mark Rs built and verified |
 | `mkit decisions` | one table of the decisions so far: brief, layers, technology, constraints, requirements by layer, out of scope, who decided each |
 | `mkit frame [show\|set <stage>]` | the staged-frame marker (so `/clear` is safe); `set done` needs a clean `mkit check` |
+| `mkit eject [--yes]` | leave mkit behind: strips the CLAUDE.md block, deletes `.mkit/` and `.mbuild/`, keeps SPEC.md (open inbox items are appended to it). Dry run without `--yes`; then `claude plugin uninstall` |
 | `mkit state [IDs]` | one machine-readable line per ID (todo, reopened, built, removed, open, answered, missing) |
 | `mkit status` | Rs done/todo/reopened, open Q, inbox |
 

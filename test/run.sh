@@ -141,6 +141,31 @@ has dec_none "$d" "none: later"; has dec_q "$d" "Cloudflare (delegated to me)"; 
 b=$(m brief); has brief_svc "$b" "S1 API: orders"; has brief_layer "$b" "(S1) Create order"
 out=$(m apply "REMOVE S1 | merged"); has remove_s_blocked "$out" "Layer S1 is not an active"
 
+# eject: leaves the spec, removes mkit's footprint
+cd "$T" && mkdir ej && cd ej && printf '# My project\n\nmy notes\n' > CLAUDE.md && m init ej >/dev/null
+m apply "ADD R | Thing | Acceptance: a" >/dev/null; m add "fix login" --bug >/dev/null; mkdir -p .mbuild; echo x > .mbuild/plan.md
+out=$(m eject); has eject_dry "$out" "dry run"; has eject_dry2 "$out" "1 open inbox"
+[ -d .mkit ] && grep -q "<!-- mkit -->" CLAUDE.md && ok || bad "dry run changed files"
+out=$(m eject --yes); has ejected "$out" "ejected"
+[ ! -d .mkit ] && [ ! -d .mbuild ] && ok || bad "state not removed"
+hasnt claude_clean "$(cat CLAUDE.md)" "mkit"; has claude_kept "$(cat CLAUDE.md)" "my notes"
+has spec_kept "$(cat SPEC.md)" "R1. Thing"; has backlog "$(cat SPEC.md)" "[bug] fix login"
+cd "$T" && mkdir ej2 && cd ej2 && m init only >/dev/null; m eject --yes >/dev/null; [ ! -f CLAUDE.md ] && [ -f SPEC.md ] && ok || bad "snippet-only CLAUDE.md removed"
+
+# init --refresh: updates only the marked block
+cd "$T" && mkdir rf && cd rf && printf '# Mine\n\nkeep me\n' > CLAUDE.md && m init rf >/dev/null
+python3 - <<'PY'
+t = open("CLAUDE.md").read()
+open("CLAUDE.md", "w").write(t.replace("## mkit\n", "## mkit\nOLD TEXT\n", 1) + "\n## Learned rules\n- keep this\n")
+PY
+has stale "$(cat CLAUDE.md)" "OLD TEXT"
+out=$(m init --refresh); has refreshed "$out" "refreshed"
+c=$(cat CLAUDE.md); hasnt old_gone "$c" "OLD TEXT"; has mine_kept "$c" "keep me"; has rules_kept "$c" "- keep this"
+eq one_block "$(grep -c '<!-- mkit -->' CLAUDE.md)" 2
+has idempotent "$(m init --refresh)" "already current"
+rm CLAUDE.md; has added "$(m init --refresh)" "added"; has added_block "$(cat CLAUDE.md)" "## mkit"
+cd "$T" && mkdir rf2 && cd rf2; has refresh_needs_project "$(m init --refresh)" "no SPEC.md"
+
 # outside a project
 cd "$T" && mkdir empty && cd empty
 out=$(m show); has "no project" "$out" "no SPEC.md"

@@ -2,6 +2,7 @@
 """mkit: one deep module over SPEC.md and the inbox. Zero model tokens.
 
   mkit init [name]               scaffold SPEC.md, .mkit/, CLAUDE.md snippet
+  mkit init --refresh            rewrite just the marked mkit block in CLAUDE.md with the current text
   mkit show [ID... | --index | --inbox]
   mkit add "<text>" [--bug|--feature|--adjust]
   mkit apply [op ...]            ops as args, or one per line on stdin
@@ -13,6 +14,8 @@
   mkit frame [show|set <stage>]  stage marker for /mkit:frame: brief, architecture, requirements,
                                  confirm, done (done needs a clean `mkit check`)
   mkit decisions                 one table of the decisions so far (the confirm step)
+  mkit eject [--yes]             leave mkit behind: strip the CLAUDE.md block, delete .mkit/ and .mbuild/,
+                                 keep SPEC.md (open inbox items are appended to it). Dry run without --yes
   mkit state [ID...]             one line per ID, for tools: R todo|reopened|built|removed,
                                  Q open|answered, other ok, unknown missing (no IDs: every R)
 
@@ -33,6 +36,7 @@ Builders (the mbuild plugin, or any tool) cross this seam: brief, state, check, 
 import datetime
 import os
 import re
+import shutil
 import sys
 
 KINDS = [("C", "Constraints"), ("A", "Assumptions"), ("S", "Services and layers"), ("R", "Requirements"),
@@ -712,15 +716,15 @@ def plugin_root():
 
 SNIPPET = """%s
 ## mkit
-SPEC.md holds scope, constraints and decisions (IDs: R requirement, O out of scope, A assumption, C constraint, Q question, T technology). Never read it whole: `mkit show` = index, `mkit show R3 O1` = just those items.
+SPEC.md holds scope, constraints and decisions (IDs: R requirement, S service or layer, O out of scope, A assumption, C constraint, Q question, T technology). Never read it whole: `mkit show` = index, `mkit show R3 O1` = just those items.
 
 When to use what:
-- Before building anything non-trivial: `mkit brief R<n>`; build only what it lists.
+- Before building anything non-trivial: `mkit brief R<n>`; build only what it lists. If `mkit frame` shows a Stage other than done, framing is unfinished: do not build, continue `/mkit:frame`.
 - User reports a bug, idea or tweak: `mkit add "<one line>" --bug|--feature|--adjust`, then carry on. Do not edit SPEC.md.
 - A request touches an O item or goes beyond an R's acceptance: stop and ask; suggest `/mkit:change`. Do not build it.
 - Scope, a constraint or a tech choice is unclear: ask, or `/mkit:research`. Do not guess.
 - Design decisions (schema, API shape, service boundaries, libraries) are the user's: ask with a recommendation, then record it (`mkit apply "ANSWER Q<n> | text | Why: ..."`, By: delegated if they say "you decide").
-- Building from the spec (slices, multi-step runs with merges, migrations or waits, review) is the mbuild plugin: `/mbuild:build`, `/mbuild:run`, `/mbuild:review`.
+- If the separate mbuild plugin is installed, it builds from the spec: `/mbuild:build` (slices), `/mbuild:run` (merges, migrations, waits), `/mbuild:review`.
 - User corrects you: `/mkit:learn`. Said "triage": `/mkit:triage`. New project or big feature with no SPEC.md: suggest `/mkit:frame` (staged: brief, architecture, requirements, confirm; it waits for the user's `ready` at each stage).
 - A requirement's acceptance changed after it was built: `mkit status` shows it `reopened`.
 - You assumed something the spec doesn't cover: `mkit add "assumed X" --adjust`.
@@ -730,7 +734,38 @@ Change SPEC.md only through `mkit apply` or `/mkit:change`, never by hand.
 """
 
 
+def snippet_span(text):
+    """(start, end) of the marked mkit block in CLAUDE.md text, or None."""
+    a = text.find(SNIPPET_MARK)
+    b = text.find(SNIPPET_MARK, a + 1) if a >= 0 else -1
+    if b <= a:
+        return None
+    return a, text.find("\n", b) + 1 or len(text)
+
+
+def refresh_snippet(args):
+    root = find_root()
+    cm = os.path.join(root, "CLAUDE.md")
+    cur = read(cm)
+    new = SNIPPET % (SNIPPET_MARK, SNIPPET_MARK)
+    span = snippet_span(cur)
+    if span:
+        out = cur[:span[0]] + new + cur[span[1]:]
+        verb = "refreshed"
+    else:
+        out = (cur.rstrip() + "\n\n" if cur.strip() else "") + new
+        verb = "added"
+    if out == cur:
+        print("CLAUDE.md block already current")
+    else:
+        write(cm, out)
+        print("%s the mkit block in CLAUDE.md" % verb)
+    return 0
+
+
 def cmd_init(args):
+    if "--refresh" in args:
+        return refresh_snippet(args)
     root = os.getcwd()
     p = paths(root)
     name = " ".join(args) or os.path.basename(root)
@@ -752,9 +787,44 @@ def cmd_init(args):
     return 0
 
 
+def cmd_eject(args):
+    """Leave mkit behind but keep the work: SPEC.md stays as plain markdown."""
+    root = find_root()
+    p = paths(root)
+    cm = os.path.join(root, "CLAUDE.md")
+    text = read(cm)
+    span = snippet_span(text)
+    open_rows = [r for r in inbox_parse(read(p["inbox"])) if not r["done"]]
+    state = [d for d in (p["dir"], os.path.join(root, ".mbuild")) if os.path.isdir(d)]
+    plan = []
+    if span:
+        plan.append("strip the mkit block from CLAUDE.md")
+    if open_rows:
+        plan.append("append %d open inbox item(s) to SPEC.md under '## Backlog (from mkit)'" % len(open_rows))
+    plan += ["delete %s/" % os.path.relpath(d, root) for d in state]
+    plan.append("keep SPEC.md")
+    if "--yes" not in args:
+        print("mkit eject (dry run):\n" + "\n".join("  - " + x for x in plan) +
+              "\nrun `mkit eject --yes` to do it; then `claude plugin uninstall mkit` (and mbuild)")
+        return 0
+    if open_rows and os.path.exists(p["spec"]):
+        extra = "\n## Backlog (from mkit)\n\n" + "".join("- [%s] %s\n" % (r["kind"], r["text"]) for r in open_rows)
+        write(p["spec"], read(p["spec"]).rstrip() + "\n" + extra)
+    if span:
+        rest = (text[:span[0]].rstrip() + "\n\n" + text[span[1]:].lstrip()).strip()
+        if rest:
+            write(cm, rest + "\n")
+        else:
+            os.remove(cm)
+    for d in state:
+        shutil.rmtree(d)
+    print("ejected: " + "; ".join(plan))
+    return 0
+
+
 COMMANDS = {"init": cmd_init, "show": cmd_show, "add": cmd_add, "apply": cmd_apply,
             "check": cmd_check, "brief": cmd_brief, "done": cmd_done, "status": cmd_status, "state": cmd_state,
-            "frame": cmd_frame, "decisions": cmd_decisions}
+            "frame": cmd_frame, "decisions": cmd_decisions, "eject": cmd_eject}
 
 
 def main(argv):
