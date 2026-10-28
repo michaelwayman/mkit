@@ -1,3 +1,4 @@
 .mkit/brief.md
 *.tmp
 __pycache__/
+.mbuild/auto/

@@ -1,9 +1,9 @@
 ---
 name: review
 description: Use to review built work against the spec: acceptance bullets, constraints, out-of-scope drift. Opt-in; one read-only reviewer, never part of build.
-argument-hint: "[R IDs] [--base <git ref>]"
+argument-hint: "[R IDs] [--base <git ref>] [--auto]"
 disable-model-invocation: true
-allowed-tools: Bash(mkit *) Bash(mbuild *) Bash(git diff *) Bash(git log *) Bash(git status *)
+allowed-tools: Bash(mkit *) Bash(mbuild *) Bash(git diff *) Bash(git log *) Bash(git status *) Write(.mbuild/auto/*)
 ---
 
 # Review
@@ -20,3 +20,5 @@ Check a change against SPEC.md, not against taste. Input: `$ARGUMENTS`. Read-onl
 3. Check each finding's evidence yourself before keeping it. Drop what you cannot confirm; list it as unverified.
 4. Report a table: `ID | verdict | evidence`, failures first, then drift, then bugs. Close with counts.
 5. On the user's yes, file each kept finding: `mkit add "..." --bug` (fail, bug), `--adjust` (drift to keep or revert). Constraint or scope questions go to `/mkit:change`. Fixing is `/mbuild:build` or the user's call.
+
+`--auto` (the driver runs this, no human): skip steps 4-5 and the questions. Write `.mbuild/auto/B<n>/review.json` (the dir holding verify.md): `{"findings":[{"kind":"fail|bug|drift|constraint|scope","text":"...","evidence":"..."}]}`. `constraint` = a C broken, `scope` = an O touched; `drift` = other unlisted behavior. Only confirmed findings. File nothing; the driver triages.
