@@ -9,7 +9,7 @@ Reads the spec only through the mkit CLI (check, state, brief, done, add, apply)
   mbuild status                      `mkit status` plus next slice and unsliced Rs
   mbuild run new|add|show|next|done|check|pause|approve
                                      multi-step run in .mbuild/run.md
-  mbuild auto check|run|status       unattended slice loop (see below); state in .mbuild/auto.md
+  mbuild auto check|run|status [--follow]  unattended slice loop (see below); state in .mbuild/auto.md
 
 Run steps: mbuild run add <spec|build|action|wait|triage> | text | Do: cmd | Check: cmd
   build text lists R ids; action needs Do:; wait needs Check: (exit 0 = satisfied).
@@ -28,6 +28,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 
 
 class Err(Exception):
@@ -403,10 +404,20 @@ def auto_log(root, line):
     write(p, read(p) + line + "\n")
 
 
-def auto_status(root, status):
+def auto_set(root, key, value):
+    """Keep one `Key: value` header line current at the top of auto.md (Status first)."""
     p = os.path.join(paths(root)["dir"], "auto.md")
-    rest = [l for l in read(p).split("\n") if l and not l.startswith("Status: ")]
-    write(p, "\n".join(["Status: " + status] + rest) + "\n")
+    lines = [l for l in read(p).split("\n") if l]
+    head = {l.split(":", 1)[0]: l for l in lines if re.match(r"^(Status|Phase): ", l)}
+    rest = [l for l in lines if not re.match(r"^(Status|Phase): ", l)]
+    head[key] = "%s: %s" % (key, value)
+    write(p, "\n".join([head[k] for k in ("Status", "Phase") if k in head] + rest) + "\n")
+
+
+def auto_status(root, status):
+    auto_set(root, "Status", status)
+    if status != "running":
+        auto_set(root, "Phase", "-")
 
 
 def git(root, *args):
@@ -415,21 +426,24 @@ def git(root, *args):
     return r.returncode, r.stdout.strip()
 
 
-def claude(root, prompt, opts):
+def claude(root, prompt, opts, d, phase):
     exe = os.environ.get("CLAUDE") or "claude"
-    cmd = [exe, "-p", prompt, "--permission-mode", "acceptEdits"] + shlex.split(os.environ.get("MBUILD_CLAUDE_ARGS", ""))
+    cmd = [exe, "-p", prompt, "--permission-mode", "acceptEdits", "--output-format", "stream-json", "--verbose"] + shlex.split(os.environ.get("MBUILD_CLAUDE_ARGS", ""))
     if opts.get("budget"):
         cmd += ["--max-budget-usd", opts["budget"]]
     env = dict(os.environ, MBUILD_AUTO="1")
+    log = os.path.join(d, phase + ".log")
+    auto_set(root, "Phase", "%s %s (log %s)" % (os.path.basename(d), phase, os.path.relpath(log, root)))
     try:
-        r = subprocess.run(cmd, cwd=root, env=env, timeout=opts["timeout"], stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, universal_newlines=True)
+        with open(log, "w") as lf:
+            r = subprocess.run(cmd, cwd=root, env=env, timeout=opts["timeout"], stdout=lf,
+                               stderr=subprocess.STDOUT, universal_newlines=True)
     except subprocess.TimeoutExpired:
         raise Stop("budget", "session timed out after %ds" % opts["timeout"], 3)
     except OSError:
         raise Stop("decision", "claude not found on PATH (set $CLAUDE)", 4)
     if r.returncode != 0:
-        raise Stop("decision", "session exited %d: %s" % (r.returncode, r.stdout.strip()[-200:]), 4)
+        raise Stop("decision", "%s exited %d: %s (log %s)" % (phase, r.returncode, read(log).strip()[-200:], os.path.relpath(log, root)), 4)
 
 
 def bullets_of(root, rid):
@@ -532,7 +546,7 @@ def auto_slice_inner(root, rs, n, opts):
     os.makedirs(d)
     ids = " ".join(rs)
     rc, base = git(root, "rev-parse", "HEAD")
-    claude(root, BUILD_PROMPT % ids, opts)
+    claude(root, BUILD_PROMPT % ids, opts, d, "build")
     tries, filed = 0, set()
     while True:
         q = needs(d)
@@ -544,7 +558,7 @@ def auto_slice_inner(root, rs, n, opts):
                 os.remove(os.path.join(d, "review.json"))
             except OSError:
                 pass
-            claude(root, REVIEW_PROMPT % (ids, base), opts)
+            claude(root, REVIEW_PROMPT % (ids, base), opts, d, "review%d" % tries)
             rev = load_review(d)
             if rev is None:
                 raise Stop("acceptance", "B%d review wrote no valid review.json" % n, 6)
@@ -565,7 +579,7 @@ def auto_slice_inner(root, rs, n, opts):
             raise Stop("acceptance", "B%d still failing after %d fix passes: %s" % (n, MAX_FIX, findings[0]["text"]), 6)
         tries += 1
         listing = "\n".join("- %s: %s" % (f["kind"], f["text"]) for f in findings)
-        claude(root, FIX_PROMPT % (ids, os.path.join(d, "verify.md"), os.path.join(d, "NEEDS"), listing), opts)
+        claude(root, FIX_PROMPT % (ids, os.path.join(d, "verify.md"), os.path.join(d, "NEEDS"), listing), opts, d, "fix%d" % tries)
     # closed only here: verify passed and the independent review found nothing blocking.
     # Commit first, then mark built and fold SPEC.md into the same commit, so spec and git cannot diverge.
     git(root, "add", "-A", "--", ".", ":(exclude).mbuild", ":(exclude).mkit")
@@ -592,6 +606,31 @@ def auto_opts(args):
     return o
 
 
+def auto_follow(root):
+    """Tail the newest session log until the run stops (or print its end if it already has)."""
+    base = os.path.join(paths(root)["dir"], "auto")
+    logs = [os.path.join(dp, f) for dp, _, fs in os.walk(base) for f in fs if f.endswith(".log")]
+    if not logs:
+        return 0
+    cur = max(logs, key=os.path.getmtime)
+    print("--- " + os.path.relpath(cur, root))
+    pos = 0
+    while True:
+        with open(cur) as f:
+            f.seek(pos)
+            for l in f:
+                print(l.rstrip()[:200])
+            pos = f.tell()
+        sys.stdout.flush()
+        if "Status: running" not in read(os.path.join(paths(root)["dir"], "auto.md")):
+            return 0
+        time.sleep(2)
+        newer = max([cur] + [x for x in logs if os.path.getmtime(x) > os.path.getmtime(cur)])
+        if newer != cur:
+            cur, pos = newer, 0
+            print("--- " + os.path.relpath(cur, root))
+
+
 def cmd_auto(args):
     if not args or args[0] not in ("check", "run", "status"):
         raise Err("usage: mbuild auto check|run|status")
@@ -601,6 +640,8 @@ def cmd_auto(args):
     verb = args[0]
     if verb == "status":
         sys.stdout.write(read(os.path.join(p["dir"], "auto.md")) or "(no auto run)\n")
+        if "--follow" in args[1:]:
+            return auto_follow(root)
         return 0
     why = None
     if not plan:

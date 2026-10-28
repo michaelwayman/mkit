@@ -142,6 +142,15 @@ has auto_dirty "$out" "not clean"; eq auto_dirty_rc "$rc" 6; eq auto_dirty_todo 
 newproj; printf 'R1.1 | pass | ok\nR1.2 | fail | 500\n' > "$FAKE_DIR/verify"; pre=$(git rev-parse HEAD)
 out=$(b auto run); has auto_wip_msg "$out" "reset --hard ${pre:0:10}"; has auto_wip_commit "$(git log --format=%s -1)" "WIP B1"
 eq auto_wip_clean "$(git status --porcelain | grep -v '^.. .m' | grep -v SPEC)" ""
+# progress: phase line, per-session logs, status --follow
+newproj; cat > "$T/fakeclaude2" <<'F2'
+#!/usr/bin/env bash
+echo '{"type":"assistant"}'; exec "$FAKE_REAL" "$@"
+F2
+chmod +x "$T/fakeclaude2"; FAKE_REAL="$T/fakeclaude" CLAUDE="$T/fakeclaude2" b auto run --max-slices 1 >/dev/null
+ls .mbuild/auto/B1/*.log | grep -q build.log && ok || bad "build.log missing"
+has auto_log_content "$(cat .mbuild/auto/B1/build.log)" '"type":"assistant"'
+has auto_phase_cleared "$(b auto status)" "Phase: -"; has auto_follow "$(b auto status --follow)" "review0.log"
 unset CLAUDE
 
 echo "passed $pass, failed $fail"; [ "$fail" = 0 ]

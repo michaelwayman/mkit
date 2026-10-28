@@ -18,6 +18,6 @@ Hands the slice loop to `mbuild auto`. Each build, review and fix is its own `cl
    - `acceptance`: still failing after 2 fix passes; leftovers are in the inbox as bugs. Next: fix by hand or `/mkit:change`.
    - `decision`: a session needs an answer (the text says what). Answer it, then `/mbuild:auto` again.
    - `budget`: a cap was hit. `/mbuild:auto` again.
-4. Report in 3 lines: slices built, why it stopped, the one next step. Rerunning resumes at the first unbuilt slice. Work is on an `mbuild/` branch; a stopped slice is a `WIP` commit (the stop text names the reset).
+4. Report in 3 lines: slices built, why it stopped, the one next step. Progress: `mbuild auto status [--follow]`. Rerunning resumes at the first unbuilt slice. Work is on an `mbuild/` branch; a stopped slice is a `WIP` commit (the stop text names the reset).
 
 Policy (fixed): failed bullet or bug gets up to 2 fix passes; drift is filed with `mkit add --adjust` and the run goes on; a broken C or an O touched stops the run.
