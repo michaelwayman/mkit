@@ -132,6 +132,16 @@ out=$(b auto run); rc=$?; has auto_decision "$out" "STOP decision"; eq auto_deci
 # preflight: open Q or unsliced Rs refuse to start
 newproj; m apply "ADD Q | Which?" >/dev/null; has auto_q "$(b auto check)" "NOT READY"
 newproj; m apply "ADD R | Loose | Acceptance: z" >/dev/null; has auto_unsliced "$(b auto check)" "unsliced Rs R3"
+# git safety: own branch, clean tree, WIP commit on stop, spec folded into the slice commit
+newproj; base=$(git rev-parse --abbrev-ref HEAD); b auto run --max-slices 1 >/dev/null
+has auto_branch "$(git rev-parse --abbrev-ref HEAD)" "mbuild/auto-"; eq auto_base_untouched "$(git rev-parse "$base")" "$(git rev-parse HEAD~1)"
+eq auto_clean_after "$(git status --porcelain | grep -v '^.. .m' )" ""
+has auto_spec_in_commit "$(git show --stat HEAD)" "SPEC.md"
+newproj; echo junk > stray.txt; out=$(b auto run); rc=$?
+has auto_dirty "$out" "not clean"; eq auto_dirty_rc "$rc" 6; eq auto_dirty_todo "$(m state R1)" "R1 todo"
+newproj; printf 'R1.1 | pass | ok\nR1.2 | fail | 500\n' > "$FAKE_DIR/verify"; pre=$(git rev-parse HEAD)
+out=$(b auto run); has auto_wip_msg "$out" "reset --hard ${pre:0:10}"; has auto_wip_commit "$(git log --format=%s -1)" "WIP B1"
+eq auto_wip_clean "$(git status --porcelain | grep -v '^.. .m' | grep -v SPEC)" ""
 unset CLAUDE
 
 echo "passed $pass, failed $fail"; [ "$fail" = 0 ]

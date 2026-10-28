@@ -20,6 +20,7 @@ Auto: mbuild auto run [--max-slices N] [--max-budget-usd X] [--timeout SECS]
   Last output line is `STOP <reason>: <text>`; exit 0 finished, 3 budget, 4 decision, 6 spec/acceptance.
 Override the mkit binary with $MKIT, claude with $CLAUDE, its extra flags with $MBUILD_CLAUDE_ARGS.
 """
+import datetime
 import json
 import os
 import re
@@ -489,14 +490,48 @@ def preflight(root):
     return None
 
 
+def dirty(root):
+    """Uncommitted changes other than mbuild/mkit state and SPEC.md (which mkit edits between slices)."""
+    rc, out = git(root, "status", "--porcelain")
+    return [l for l in out.split("\n") if l.strip()
+            and not re.match(r"^\s*\S{1,2}\s+\"?(\.mbuild/|\.mkit/|SPEC\.md$)", l)]
+
+
+def auto_branch(root):
+    """Work only on an mbuild/ branch, so the user's branch is never touched. Returns its name."""
+    rc, cur = git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    if rc != 0:
+        raise Stop("spec", "not a git repo with a commit; auto commits one per slice", 6)
+    if cur.startswith("mbuild/"):
+        return cur
+    name = "mbuild/auto-" + datetime.date.today().isoformat()
+    if git(root, "rev-parse", "--verify", "-q", name)[0] == 0:
+        rc, out = git(root, "checkout", "-q", name)
+    else:
+        rc, out = git(root, "checkout", "-q", "-b", name)
+    if rc != 0:
+        raise Stop("spec", "could not switch to %s: %s" % (name, out), 6)
+    return name
+
+
 def auto_slice(root, rs, n, opts):
+    base = git(root, "rev-parse", "HEAD")[1]
+    try:
+        auto_slice_inner(root, rs, n, opts)
+    except Stop as s:
+        if s.reason != "finished" and dirty(root):
+            git(root, "add", "-A", "--", ".", ":(exclude).mbuild", ":(exclude).mkit")
+            git(root, "commit", "-q", "-m", "WIP B%d: %s (%s)" % (n, " ".join(rs), s.reason))
+            s.text += " [partial work kept as commit 'WIP B%d'; to discard: git reset --hard %s]" % (n, base[:10])
+        raise
+
+
+def auto_slice_inner(root, rs, n, opts):
     d = auto_dir(root, n)
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d)
     ids = " ".join(rs)
     rc, base = git(root, "rev-parse", "HEAD")
-    if rc != 0:
-        raise Stop("spec", "not a git repo with a commit; auto commits one per slice", 6)
     claude(root, BUILD_PROMPT % ids, opts)
     tries, filed = 0, set()
     while True:
@@ -531,12 +566,15 @@ def auto_slice(root, rs, n, opts):
         tries += 1
         listing = "\n".join("- %s: %s" % (f["kind"], f["text"]) for f in findings)
         claude(root, FIX_PROMPT % (ids, os.path.join(d, "verify.md"), os.path.join(d, "NEEDS"), listing), opts)
-    # closed only here: verify passed and the independent review found nothing blocking
+    # closed only here: verify passed and the independent review found nothing blocking.
+    # Commit first, then mark built and fold SPEC.md into the same commit, so spec and git cannot diverge.
+    git(root, "add", "-A", "--", ".", ":(exclude).mbuild", ":(exclude).mkit")
+    git(root, "commit", "-q", "--allow-empty", "-m", "B%d: %s" % (n, ids))
     rc, out = mkit(root, "done", *rs)
     if rc != 0:
         raise Stop("spec", "mkit done failed: " + out, 6)
-    git(root, "add", "-A", "--", ".", ":(exclude).mbuild", ":(exclude).mkit")
-    git(root, "commit", "-q", "--allow-empty", "-m", "B%d: %s" % (n, ids))
+    git(root, "add", "SPEC.md")
+    git(root, "commit", "-q", "--amend", "--no-edit")
     auto_log(root, "B%d: %s built (%d fix passes)" % (n, ids, tries))
 
 
@@ -580,6 +618,11 @@ def cmd_auto(args):
     try:
         if why:
             raise Stop("spec" if plan else "decision", why, 6 if plan else 4)
+        bad = dirty(root)
+        if bad:
+            raise Stop("spec", "working tree not clean (%s); commit or stash first" % bad[0].strip(), 6)
+        branch = auto_branch(root)
+        auto_log(root, "branch " + branch)
         while True:
             rs = next_slice(root, plan)
             if not rs:
