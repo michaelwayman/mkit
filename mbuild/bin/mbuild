@@ -9,7 +9,7 @@ Reads the spec only through the mkit CLI (check, state, brief, done, add, apply)
   mbuild status                      `mkit status` plus next slice and unsliced Rs
   mbuild run new|add|show|next|done|check|pause|approve
                                      multi-step run in .mbuild/run.md
-  mbuild auto check|run|status [--follow]  unattended slice loop (see below); state in .mbuild/auto.md
+  mbuild auto check|run|next|abort|status [--follow]  unattended slice loop (see below); state in .mbuild/auto.md
 
 Run steps: mbuild run add <spec|build|action|wait|triage> | text | Do: cmd | Check: cmd
   build text lists R ids; action needs Do:; wait needs Check: (exit 0 = satisfied).
@@ -382,7 +382,7 @@ def run_advance(root, run, verb, rest):
 MAX_FIX = 2
 BLOCKING = ("fail", "bug")
 STOPPING = ("constraint", "scope")
-BUILD_PROMPT = "/mbuild:build %s"
+BUILD_PROMPT = "/mbuild:build %s --auto"
 REVIEW_PROMPT = "/mbuild:review %s --base %s --auto"
 FIX_PROMPT = ("Fix only these findings for %s, in the working tree. Do not run `mkit done`, do not commit, "
               "do not edit SPEC.md. Rerun every acceptance bullet and rewrite %s "
@@ -528,68 +528,173 @@ def auto_branch(root):
     return name
 
 
-def auto_slice(root, rs, n, opts):
-    base = git(root, "rev-parse", "HEAD")[1]
+def state_path(root):
+    return os.path.join(paths(root)["dir"], "auto", "state.json")
+
+
+def state_load(root):
     try:
-        auto_slice_inner(root, rs, n, opts)
-    except Stop as s:
-        if s.reason != "finished" and dirty(root):
-            git(root, "add", "-A", "--", ".", ":(exclude).mbuild", ":(exclude).mkit")
-            git(root, "commit", "-q", "-m", "WIP B%d: %s (%s)" % (n, " ".join(rs), s.reason))
-            s.text += " [partial work kept as commit 'WIP B%d'; to discard: git reset --hard %s]" % (n, base[:10])
-        raise
+        return json.loads(read(state_path(root)))
+    except ValueError:
+        return None
 
 
-def auto_slice_inner(root, rs, n, opts):
-    d = auto_dir(root, n)
-    shutil.rmtree(d, ignore_errors=True)
-    os.makedirs(d)
-    ids = " ".join(rs)
-    rc, base = git(root, "rev-parse", "HEAD")
-    claude(root, BUILD_PROMPT % ids, opts, d, "build")
-    tries, filed = 0, set()
-    while True:
-        q = needs(d)
-        if q:
-            raise Stop("decision", "B%d needs a decision: %s" % (n, q), 4)
-        findings = [{"kind": "fail", "text": p} for p in verify_gate(root, rs, d)]
-        if not findings:
-            try:
-                os.remove(os.path.join(d, "review.json"))
-            except OSError:
-                pass
-            claude(root, REVIEW_PROMPT % (ids, base), opts, d, "review%d" % tries)
-            rev = load_review(d)
-            if rev is None:
-                raise Stop("acceptance", "B%d review wrote no valid review.json" % n, 6)
-            for f in rev:
-                kind, text = f.get("kind", ""), str(f.get("text", "")).strip()
-                if kind in STOPPING:
-                    raise Stop("spec", "B%d %s: %s" % (n, kind, text), 6)
-                if kind == "drift" and text not in filed:
-                    filed.add(text)
-                    mkit(root, "add", text, "--adjust")
-                elif kind in BLOCKING:
-                    findings.append({"kind": kind, "text": text})
-        if not findings:
-            break
-        if tries >= MAX_FIX:
-            for f in findings:
-                mkit(root, "add", "B%d: %s" % (n, f["text"]), "--bug")
-            raise Stop("acceptance", "B%d still failing after %d fix passes: %s" % (n, MAX_FIX, findings[0]["text"]), 6)
-        tries += 1
-        listing = "\n".join("- %s: %s" % (f["kind"], f["text"]) for f in findings)
-        claude(root, FIX_PROMPT % (ids, os.path.join(d, "verify.md"), os.path.join(d, "NEEDS"), listing), opts, d, "fix%d" % tries)
+def state_save(root, st):
+    write(state_path(root), json.dumps(st))
+
+
+def state_drop(root):
+    try:
+        os.remove(state_path(root))
+    except OSError:
+        pass
+
+
+def spawn(root, st, label, prompt):
+    """Record which session is out, and hand the caller its prompt (also saved beside the logs)."""
+    sl = st["slice"]
+    sl["pending"] = label
+    d = auto_dir(root, sl["n"])
+    write(os.path.join(d, label + ".prompt"), prompt)
+    state_save(root, st)
+    return {"label": label, "prompt": prompt, "dir": d, "n": sl["n"]}
+
+
+def blocked(root, st, findings):
+    sl = st["slice"]
+    if sl["tries"] >= MAX_FIX:
+        for f in findings:
+            mkit(root, "add", "B%d: %s" % (sl["n"], f["text"]), "--bug")
+        raise Stop("acceptance", "B%d still failing after %d fix passes: %s" % (sl["n"], MAX_FIX, findings[0]["text"]), 6)
+    sl["tries"] += 1
+    d = auto_dir(root, sl["n"])
+    listing = "\n".join("- %s: %s" % (f["kind"], f["text"]) for f in findings)
+    prompt = FIX_PROMPT % (" ".join(sl["rs"]), os.path.join(d, "verify.md"), os.path.join(d, "NEEDS"), listing)
+    return spawn(root, st, "fix%d" % sl["tries"], prompt)
+
+
+def after_work(root, st):
+    """A build or fix session ended: human needed? verify gate? then ask for the independent review."""
+    sl = st["slice"]
+    d = auto_dir(root, sl["n"])
+    q = needs(d)
+    if q:
+        raise Stop("decision", "B%d needs a decision: %s" % (sl["n"], q), 4)
+    probs = verify_gate(root, sl["rs"], d)
+    if probs:
+        return blocked(root, st, [{"kind": "fail", "text": x} for x in probs])
+    try:
+        os.remove(os.path.join(d, "review.json"))
+    except OSError:
+        pass
+    return spawn(root, st, "review%d" % sl["tries"], REVIEW_PROMPT % (" ".join(sl["rs"]), sl["base"]))
+
+
+def after_review(root, st):
+    """The review ended: fixed triage. Returns a fix action, or None once the slice is closed."""
+    sl = st["slice"]
+    d = auto_dir(root, sl["n"])
+    rev = load_review(d)
+    if rev is None:
+        raise Stop("acceptance", "B%d review wrote no valid review.json" % sl["n"], 6)
+    findings = []
+    for f in rev:
+        kind, text = f.get("kind", ""), str(f.get("text", "")).strip()
+        if kind in STOPPING:
+            raise Stop("spec", "B%d %s: %s" % (sl["n"], kind, text), 6)
+        if kind == "drift" and text not in sl["filed"]:
+            sl["filed"].append(text)
+            mkit(root, "add", text, "--adjust")
+        elif kind in BLOCKING:
+            findings.append({"kind": kind, "text": text})
+    if findings:
+        return blocked(root, st, findings)
     # closed only here: verify passed and the independent review found nothing blocking.
     # Commit first, then mark built and fold SPEC.md into the same commit, so spec and git cannot diverge.
+    ids = " ".join(sl["rs"])
     git(root, "add", "-A", "--", ".", ":(exclude).mbuild", ":(exclude).mkit")
-    git(root, "commit", "-q", "--allow-empty", "-m", "B%d: %s" % (n, ids))
-    rc, out = mkit(root, "done", *rs)
+    git(root, "commit", "-q", "--allow-empty", "-m", "B%d: %s" % (sl["n"], ids))
+    rc, out = mkit(root, "done", *sl["rs"])
     if rc != 0:
         raise Stop("spec", "mkit done failed: " + out, 6)
     git(root, "add", "SPEC.md")
     git(root, "commit", "-q", "--amend", "--no-edit")
-    auto_log(root, "B%d: %s built (%d fix passes)" % (n, ids, tries))
+    auto_log(root, "B%d: %s built (%d fix passes)" % (sl["n"], ids, sl["tries"]))
+    st["done_n"] += 1
+    st["slice"] = None
+    state_save(root, st)
+    return None
+
+
+def ready(root, plan):
+    """Why a run cannot start, as (text, exit code), or None."""
+    if not plan:
+        return "no .mbuild/plan.md; run /mbuild:build once to slice", 4
+    loose = unsliced(root, plan)
+    if loose:
+        return "unsliced Rs %s; run /mbuild:build to slice them" % " ".join(loose), 4
+    why = preflight(root)
+    return (why, 6) if why else None
+
+
+def advance(root, max_slices):
+    """Evaluate whatever session just ended and return the next session to run (a dict), or raise Stop.
+    State lives in .mbuild/auto/state.json, so a caller that spawns sessions itself can drive this."""
+    p = paths(root)
+    st = state_load(root)
+    if st is None:
+        plan = plan_parse(read(p["plan"]))
+        r = ready(root, plan)
+        if r:
+            raise Stop("spec" if r[1] == 6 else "decision", r[0], r[1])
+        bad = dirty(root)
+        if bad:
+            raise Stop("spec", "working tree not clean (%s); commit or stash first" % bad[0].strip(), 6)
+        write(os.path.join(p["dir"], "auto.md"), "Status: running\n")
+        auto_log(root, "branch " + auto_branch(root))
+        st = {"done_n": 0, "max": max_slices, "slice": None}
+        state_save(root, st)
+    while True:
+        sl = st["slice"]
+        if sl is None:
+            plan = plan_parse(read(p["plan"]))
+            rs = next_slice(root, plan)
+            if not rs:
+                if unsliced(root, plan):
+                    raise Stop("decision", "new Rs were added mid-run; run /mbuild:build to slice them", 4)
+                if spec_problems(root):
+                    raise Stop("spec", "all slices built but `mkit check` fails", 6)
+                raise Stop("finished", "%d slices built, verified and reviewed" % st["done_n"], 0)
+            if st["max"] is not None and st["done_n"] >= st["max"]:
+                raise Stop("budget", "stopped after %d slices (--max-slices)" % st["done_n"], 3)
+            why = preflight(root)
+            if why:
+                raise Stop("spec", why, 6)
+            n = [k for k, r in plan if set(rs) & set(r)][0]
+            d = auto_dir(root, n)
+            shutil.rmtree(d, ignore_errors=True)
+            os.makedirs(d)
+            st["slice"] = {"n": n, "rs": rs, "base": git(root, "rev-parse", "HEAD")[1], "tries": 0,
+                           "filed": [], "pending": None}
+            return spawn(root, st, "build", BUILD_PROMPT % " ".join(rs))
+        act = after_review(root, st) if sl["pending"].startswith("review") else after_work(root, st)
+        if act:
+            return act
+
+
+def finalize(root, s):
+    """A run ended: keep any partial slice as a WIP commit, drop run state, record and set the status."""
+    st = state_load(root)
+    sl = st and st.get("slice")
+    if sl and s.reason != "finished" and dirty(root):
+        git(root, "add", "-A", "--", ".", ":(exclude).mbuild", ":(exclude).mkit")
+        git(root, "commit", "-q", "-m", "WIP B%d: %s (%s)" % (sl["n"], " ".join(sl["rs"]), s.reason))
+        s.text += " [partial work kept as commit 'WIP B%d'; to discard: git reset --hard %s]" % (sl["n"], sl["base"][:10])
+    state_drop(root)
+    auto_log(root, "STOP %s: %s" % (s.reason, s.text))
+    auto_status(root, "done" if s.reason == "finished" else "stopped")
+    print("STOP %s: %s" % (s.reason, s.text))
+    return s.rc
 
 
 def auto_opts(args):
@@ -632,60 +737,33 @@ def auto_follow(root):
 
 
 def cmd_auto(args):
-    if not args or args[0] not in ("check", "run", "status"):
-        raise Err("usage: mbuild auto check|run|status")
+    if not args or args[0] not in ("check", "run", "next", "abort", "status"):
+        raise Err("usage: mbuild auto check|run|next|abort|status")
     root = find_root()
     p = paths(root)
-    plan = plan_parse(read(p["plan"]))
     verb = args[0]
     if verb == "status":
         sys.stdout.write(read(os.path.join(p["dir"], "auto.md")) or "(no auto run)\n")
-        if "--follow" in args[1:]:
-            return auto_follow(root)
-        return 0
-    why = None
-    if not plan:
-        why = "no .mbuild/plan.md; run /mbuild:build once to slice"
-    elif unsliced(root, plan):
-        why = "unsliced Rs %s; run /mbuild:build to slice them" % " ".join(unsliced(root, plan))
-    else:
-        why = preflight(root)
+        return auto_follow(root) if "--follow" in args[1:] else 0
     if verb == "check":
-        print("ok" if not why else "NOT READY: " + why)
-        return 0 if not why else 6
+        r = ready(root, plan_parse(read(p["plan"])))
+        print("ok" if not r else "NOT READY: " + r[0])
+        return 0 if not r else 6
+    if verb == "abort":
+        # a caller that spawns sessions itself reports one that failed or timed out
+        return finalize(root, Stop("decision", " ".join(args[1:]) or "aborted", 4))
     opts = auto_opts(args[1:])
-    write(os.path.join(p["dir"], "auto.md"), "Status: running\n")
-    done_n = 0
     try:
-        if why:
-            raise Stop("spec" if plan else "decision", why, 6 if plan else 4)
-        bad = dirty(root)
-        if bad:
-            raise Stop("spec", "working tree not clean (%s); commit or stash first" % bad[0].strip(), 6)
-        branch = auto_branch(root)
-        auto_log(root, "branch " + branch)
+        if verb == "next":
+            act = advance(root, opts["max"])
+            print("SPAWN %s B%d\nPrompt: %s" % (act["label"], act["n"], os.path.join(act["dir"], act["label"] + ".prompt")))
+            return 0
         while True:
-            rs = next_slice(root, plan)
-            if not rs:
-                break
-            if opts["max"] is not None and done_n >= opts["max"]:
-                raise Stop("budget", "stopped after %d slices (--max-slices)" % done_n, 3)
-            why = preflight(root)
-            if why:
-                raise Stop("spec", why, 6)
-            n = [k for k, r in plan if set(rs) & set(r)][0]
-            auto_slice(root, rs, n, opts)
-            done_n += 1
-        if unsliced(root, plan):
-            raise Stop("decision", "new Rs were added mid-run; run /mbuild:build to slice them", 4)
-        if spec_problems(root):
-            raise Stop("spec", "all slices built but `mkit check` fails", 6)
-        raise Stop("finished", "%d slices built, verified and reviewed" % done_n, 0)
+            act = advance(root, opts["max"])
+            claude(root, act["prompt"], opts, act["dir"], act["label"])
     except Stop as s:
-        auto_log(root, "STOP %s: %s" % (s.reason, s.text))
-        auto_status(root, "done" if s.reason == "finished" else "stopped")
-        print("STOP %s: %s" % (s.reason, s.text))
-        return s.rc
+        return finalize(root, s)
+
 
 
 COMMANDS = {"plan": cmd_plan, "status": cmd_status, "run": cmd_run, "auto": cmd_auto}

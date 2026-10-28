@@ -153,4 +153,18 @@ has auto_log_content "$(cat .mbuild/auto/B1/build.log)" '"type":"assistant"'
 has auto_phase_cleared "$(b auto status)" "Phase: -"; has auto_follow "$(b auto status --follow)" "review0.log"
 unset CLAUDE
 
+# step verbs (foreground): the caller spawns the sessions, the driver gates and triages
+newproj; export CLAUDE="$T/fakeclaude"
+out=$(b auto next --max-slices 2); has step_build "$out" "SPAWN build B1"; [ -f .mbuild/auto/B1/build.prompt ] && ok || bad "prompt file"
+has step_prompt "$(cat .mbuild/auto/B1/build.prompt)" "/mbuild:build R1 --auto"
+eq step_not_done "$(m state R1)" "R1 todo"
+out=$(b auto next); has step_fix_without_verify "$out" "SPAWN fix1 B1"   # nothing recorded yet: gate refuses
+"$CLAUDE" -p "/mbuild:build"; out=$(b auto next); has step_review "$out" "SPAWN review1 B1"
+eq step_still_todo "$(m state R1)" "R1 todo"
+"$CLAUDE" -p "/mbuild:review"; out=$(b auto next); has step_next_slice "$out" "SPAWN build B2"
+eq step_r1_built "$(m state R1)" "R1 built"; eq step_commit "$(git log --format=%s -1)" "B1: R1"
+out=$(b auto abort "session crashed"); rc=$?; has step_abort "$out" "STOP decision: session crashed"; eq step_abort_rc "$rc" 4
+has step_state_dropped "$(ls .mbuild/auto)" "B1"; [ -f .mbuild/auto/state.json ] && bad "state kept" || ok
+unset CLAUDE
+
 echo "passed $pass, failed $fail"; [ "$fail" = 0 ]

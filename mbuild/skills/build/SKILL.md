@@ -1,7 +1,7 @@
 ---
 name: build
 description: Use to build a ready spec slice by slice, from the first requirement to done. One slice per fresh session; verifies acceptance before marking anything built.
-argument-hint: "[R IDs]"
+argument-hint: "[R IDs] [--auto]"
 disable-model-invocation: true
 allowed-tools: Bash(mkit *) Bash(mbuild *) Bash(git *)
 ---
@@ -23,7 +23,7 @@ Propose slices from `mkit show`: 1-3 Rs each, P0 first, one coherent surface (us
 Run every acceptance bullet of the slice as a command, request or test; `Visual:` bullets as screenshots at 375px and 1280px. Report each bullet pass or fail. Fix failures in this session.
 All pass: `mkit done <ids>`, commit, then **checkpoint**: "Slice done. `/clear`, then `/mbuild:build` for the next." If the inbox has 5 or more items, add: "Run `/mkit:triage` first."
 A bullet that cannot pass: do not mark done. `mkit add "..." --bug`, say which, and stop.
-If `MBUILD_AUTO=1`: no questions, no `mkit done`, no commit, no checkpoint. Write `.mbuild/auto/B<n>/verify.md`, one line per bullet in `mkit show` order: `R1.1 | pass|fail | evidence`. Cannot proceed without a human: write the question to `.mbuild/auto/B<n>/NEEDS` and stop.
+If `MBUILD_AUTO=1` or `$ARGUMENTS` has `--auto` (drop it before `mkit brief`): no questions, no `mkit done`, no commit, no checkpoint. Write `.mbuild/auto/B<n>/verify.md`, one line per bullet in `mkit show` order: `R1.1 | pass|fail | evidence`. Cannot proceed without a human: write the question to `.mbuild/auto/B<n>/NEEDS` and stop.
 
 ## 5. Close out
 `mbuild status`. Done means: every P0 R built; P1/P2 built or moved to O via `/mkit:change`; inbox empty or consciously deferred; `mkit check` clean. Then run `/mbuild:review` over everything built: it checks acceptance, constraints and scope drift against the diff. Tagging a release is the user's call.
